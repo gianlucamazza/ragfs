@@ -130,7 +130,7 @@
 //! let fs = RagFs::with_rag(source_path, store, embedder, runtime, reindex_sender);
 //!
 //! // Mount
-//! fuser::mount2(fs, mountpoint, &options)?;
+//! fuser::mount(fs, mountpoint, &config)?;
 //! ```
 
 pub mod filesystem;

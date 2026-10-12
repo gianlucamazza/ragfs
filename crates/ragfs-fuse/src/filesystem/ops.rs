@@ -1,32 +1,33 @@
 //! `.ops/` virtual files.
 
-use fuser::{FileType, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, ReplyWrite};
-use libc::ENOENT;
+use fuser::{
+    Errno, FileType, INodeNo, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, ReplyWrite,
+};
 
-use super::{RagFs, TTL, reply_file_bytes};
+use super::{GENERATION, RagFs, TTL, reply_file_bytes};
 use crate::inode::{
     OPS_BATCH_INO, OPS_CREATE_INO, OPS_DELETE_INO, OPS_DIR_INO, OPS_MOVE_INO, OPS_RESULT_INO,
     RAGFS_DIR_INO,
 };
 
 impl RagFs {
-    pub(crate) fn lookup_ops_dir(&mut self, name_str: &str, reply: ReplyEntry) {
+    pub(crate) fn lookup_ops_dir(&self, name_str: &str, reply: ReplyEntry) {
         match name_str {
             ".create" => {
                 let attr = self.make_attr(OPS_CREATE_INO, FileType::RegularFile, 0);
-                reply.entry(&TTL, &attr, 0);
+                reply.entry(&TTL, &attr, GENERATION);
             }
             ".delete" => {
                 let attr = self.make_attr(OPS_DELETE_INO, FileType::RegularFile, 0);
-                reply.entry(&TTL, &attr, 0);
+                reply.entry(&TTL, &attr, GENERATION);
             }
             ".move" => {
                 let attr = self.make_attr(OPS_MOVE_INO, FileType::RegularFile, 0);
-                reply.entry(&TTL, &attr, 0);
+                reply.entry(&TTL, &attr, GENERATION);
             }
             ".batch" => {
                 let attr = self.make_attr(OPS_BATCH_INO, FileType::RegularFile, 0);
-                reply.entry(&TTL, &attr, 0);
+                reply.entry(&TTL, &attr, GENERATION);
             }
             ".result" => {
                 let content = self.runtime.block_on(self.ops_manager.get_last_result());
@@ -34,13 +35,13 @@ impl RagFs {
                     self.make_attr(OPS_RESULT_INO, FileType::RegularFile, content.len() as u64);
                 let mut cache = self.runtime.block_on(self.content_cache.write());
                 cache.insert(OPS_RESULT_INO, content);
-                reply.entry(&TTL, &attr, 0);
+                reply.entry(&TTL, &attr, GENERATION);
             }
-            _ => reply.error(ENOENT),
+            _ => reply.error(Errno::ENOENT),
         }
     }
 
-    pub(crate) fn getattr_ops(&mut self, ino: u64, reply: ReplyAttr) {
+    pub(crate) fn getattr_ops(&self, ino: u64, reply: ReplyAttr) {
         match ino {
             OPS_DIR_INO => {
                 let attr = self.make_attr(ino, FileType::Directory, 0);
@@ -58,11 +59,11 @@ impl RagFs {
                 let attr = self.make_attr(ino, FileType::RegularFile, size);
                 reply.attr(&TTL, &attr);
             }
-            _ => reply.error(ENOENT),
+            _ => reply.error(Errno::ENOENT),
         }
     }
 
-    pub(crate) fn read_ops(&mut self, ino: u64, offset: i64, size: u32, reply: ReplyData) {
+    pub(crate) fn read_ops(&self, ino: u64, offset: u64, size: u32, reply: ReplyData) {
         match ino {
             OPS_RESULT_INO => {
                 let content = self.runtime.block_on(self.ops_manager.get_last_result());
@@ -71,11 +72,11 @@ impl RagFs {
             OPS_CREATE_INO | OPS_DELETE_INO | OPS_MOVE_INO | OPS_BATCH_INO => {
                 reply.data(&[]);
             }
-            _ => reply.error(ENOENT),
+            _ => reply.error(Errno::ENOENT),
         }
     }
 
-    pub(crate) fn readdir_ops(&mut self, offset: i64, mut reply: ReplyDirectory) {
+    pub(crate) fn readdir_ops(&self, offset: u64, mut reply: ReplyDirectory) {
         let entries = [
             (OPS_DIR_INO, FileType::Directory, "."),
             (RAGFS_DIR_INO, FileType::Directory, ".."),
@@ -87,14 +88,14 @@ impl RagFs {
         ];
 
         for (i, (ino, kind, name)) in entries.iter().enumerate().skip(offset as usize) {
-            if reply.add(*ino, (i + 1) as i64, *kind, name) {
+            if reply.add(INodeNo(*ino), (i + 1) as u64, *kind, name) {
                 break;
             }
         }
         reply.ok();
     }
 
-    pub(crate) fn write_ops(&mut self, ino: u64, data: &[u8], reply: ReplyWrite) {
+    pub(crate) fn write_ops(&self, ino: u64, data: &[u8], reply: ReplyWrite) {
         if ino == OPS_CREATE_INO {
             let data_str = String::from_utf8_lossy(data).to_string();
             let ops_manager = self.ops_manager.clone();

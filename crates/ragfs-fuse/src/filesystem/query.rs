@@ -1,27 +1,28 @@
 //! `.query` / `.search` / `.similar` and the other `.ragfs/` control files
 //! (`.index`, `.config`, `.reindex`, `.help`).
 
-use fuser::{FileType, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, ReplyWrite};
-use libc::{EINVAL, ENOENT};
+use fuser::{
+    Errno, FileType, INodeNo, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, ReplyWrite,
+};
 use std::path::PathBuf;
 use tracing::{debug, info, warn};
 
-use super::{RagFs, TTL, reply_file_bytes};
+use super::{GENERATION, RagFs, TTL, reply_file_bytes};
 use crate::inode::{
     CONFIG_FILE_INO, HELP_FILE_INO, INDEX_FILE_INO, OPS_DIR_INO, QUERY_DIR_INO, REINDEX_FILE_INO,
     SAFETY_DIR_INO, SEARCH_DIR_INO, SEMANTIC_DIR_INO, SIMILAR_DIR_INO,
 };
 
 impl RagFs {
-    pub(crate) fn lookup_ragfs_dir(&mut self, name_str: &str, reply: ReplyEntry) {
+    pub(crate) fn lookup_ragfs_dir(&self, name_str: &str, reply: ReplyEntry) {
         match name_str {
             ".query" => {
                 let attr = self.make_attr(QUERY_DIR_INO, FileType::Directory, 0);
-                reply.entry(&TTL, &attr, 0);
+                reply.entry(&TTL, &attr, GENERATION);
             }
             ".search" => {
                 let attr = self.make_attr(SEARCH_DIR_INO, FileType::Directory, 0);
-                reply.entry(&TTL, &attr, 0);
+                reply.entry(&TTL, &attr, GENERATION);
             }
             ".index" => {
                 let content = self.get_index_status();
@@ -29,7 +30,7 @@ impl RagFs {
                     self.make_attr(INDEX_FILE_INO, FileType::RegularFile, content.len() as u64);
                 let mut cache = self.runtime.block_on(self.content_cache.write());
                 cache.insert(INDEX_FILE_INO, content);
-                reply.entry(&TTL, &attr, 0);
+                reply.entry(&TTL, &attr, GENERATION);
             }
             ".config" => {
                 let content = self.get_config();
@@ -37,15 +38,15 @@ impl RagFs {
                     self.make_attr(CONFIG_FILE_INO, FileType::RegularFile, content.len() as u64);
                 let mut cache = self.runtime.block_on(self.content_cache.write());
                 cache.insert(CONFIG_FILE_INO, content);
-                reply.entry(&TTL, &attr, 0);
+                reply.entry(&TTL, &attr, GENERATION);
             }
             ".reindex" => {
                 let attr = self.make_attr(REINDEX_FILE_INO, FileType::RegularFile, 0);
-                reply.entry(&TTL, &attr, 0);
+                reply.entry(&TTL, &attr, GENERATION);
             }
             ".similar" => {
                 let attr = self.make_attr(SIMILAR_DIR_INO, FileType::Directory, 0);
-                reply.entry(&TTL, &attr, 0);
+                reply.entry(&TTL, &attr, GENERATION);
             }
             ".help" => {
                 let content = self.get_help_content();
@@ -53,25 +54,25 @@ impl RagFs {
                     self.make_attr(HELP_FILE_INO, FileType::RegularFile, content.len() as u64);
                 let mut cache = self.runtime.block_on(self.content_cache.write());
                 cache.insert(HELP_FILE_INO, content);
-                reply.entry(&TTL, &attr, 0);
+                reply.entry(&TTL, &attr, GENERATION);
             }
             ".ops" => {
                 let attr = self.make_attr(OPS_DIR_INO, FileType::Directory, 0);
-                reply.entry(&TTL, &attr, 0);
+                reply.entry(&TTL, &attr, GENERATION);
             }
             ".safety" => {
                 let attr = self.make_attr(SAFETY_DIR_INO, FileType::Directory, 0);
-                reply.entry(&TTL, &attr, 0);
+                reply.entry(&TTL, &attr, GENERATION);
             }
             ".semantic" => {
                 let attr = self.make_attr(SEMANTIC_DIR_INO, FileType::Directory, 0);
-                reply.entry(&TTL, &attr, 0);
+                reply.entry(&TTL, &attr, GENERATION);
             }
-            _ => reply.error(ENOENT),
+            _ => reply.error(Errno::ENOENT),
         }
     }
 
-    pub(crate) fn lookup_query_dir(&mut self, name_str: &str, reply: ReplyEntry) {
+    pub(crate) fn lookup_query_dir(&self, name_str: &str, reply: ReplyEntry) {
         let query = name_str.to_string();
         let content = self.execute_query(&query);
 
@@ -83,10 +84,10 @@ impl RagFs {
         let mut cache = self.runtime.block_on(self.content_cache.write());
         cache.insert(ino, content);
 
-        reply.entry(&TTL, &attr, 0);
+        reply.entry(&TTL, &attr, GENERATION);
     }
 
-    pub(crate) fn getattr_query(&mut self, ino: u64, reply: ReplyAttr) {
+    pub(crate) fn getattr_query(&self, ino: u64, reply: ReplyAttr) {
         match ino {
             QUERY_DIR_INO | SEARCH_DIR_INO | SIMILAR_DIR_INO => {
                 let attr = self.make_attr(ino, FileType::Directory, 0);
@@ -120,11 +121,11 @@ impl RagFs {
                 let attr = self.make_attr(ino, FileType::RegularFile, size);
                 reply.attr(&TTL, &attr);
             }
-            _ => reply.error(ENOENT),
+            _ => reply.error(Errno::ENOENT),
         }
     }
 
-    pub(crate) fn read_query(&mut self, ino: u64, offset: i64, size: u32, reply: ReplyData) {
+    pub(crate) fn read_query(&self, ino: u64, offset: u64, size: u32, reply: ReplyData) {
         match ino {
             INDEX_FILE_INO => {
                 let content = self.get_index_status();
@@ -141,11 +142,11 @@ impl RagFs {
                 let content = self.get_help_content();
                 reply_file_bytes(reply, &content, offset, size);
             }
-            _ => reply.error(ENOENT),
+            _ => reply.error(Errno::ENOENT),
         }
     }
 
-    pub(crate) fn readdir_ragfs(&mut self, offset: i64, mut reply: ReplyDirectory) {
+    pub(crate) fn readdir_ragfs(&self, offset: u64, mut reply: ReplyDirectory) {
         let entries = [
             (crate::inode::RAGFS_DIR_INO, FileType::Directory, "."),
             (crate::inode::ROOT_INO, FileType::Directory, ".."),
@@ -162,28 +163,28 @@ impl RagFs {
         ];
 
         for (i, (ino, kind, name)) in entries.iter().enumerate().skip(offset as usize) {
-            if reply.add(*ino, (i + 1) as i64, *kind, name) {
+            if reply.add(INodeNo(*ino), (i + 1) as u64, *kind, name) {
                 break;
             }
         }
         reply.ok();
     }
 
-    pub(crate) fn readdir_query(&mut self, ino: u64, offset: i64, mut reply: ReplyDirectory) {
+    pub(crate) fn readdir_query(&self, ino: u64, offset: u64, mut reply: ReplyDirectory) {
         let entries = [
             (ino, FileType::Directory, "."),
             (crate::inode::RAGFS_DIR_INO, FileType::Directory, ".."),
         ];
 
         for (i, (entry_ino, kind, name)) in entries.iter().enumerate().skip(offset as usize) {
-            if reply.add(*entry_ino, (i + 1) as i64, *kind, name) {
+            if reply.add(INodeNo(*entry_ino), (i + 1) as u64, *kind, name) {
                 break;
             }
         }
         reply.ok();
     }
 
-    pub(crate) fn write_reindex(&mut self, data: &[u8], reply: ReplyWrite) {
+    pub(crate) fn write_reindex(&self, data: &[u8], reply: ReplyWrite) {
         let path_str = String::from_utf8_lossy(data).trim().to_string();
 
         if path_str.is_empty() {
@@ -197,7 +198,7 @@ impl RagFs {
             Ok(p) => p,
             Err(e) => {
                 warn!("Rejected reindex path: {e}");
-                reply.error(EINVAL);
+                reply.error(Errno::EINVAL);
                 return;
             }
         };
