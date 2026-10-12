@@ -1,22 +1,23 @@
 //! `.semantic/` virtual files.
 
-use fuser::{FileType, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, ReplyWrite};
-use libc::ENOENT;
+use fuser::{
+    Errno, FileType, INodeNo, ReplyAttr, ReplyData, ReplyDirectory, ReplyEntry, ReplyWrite,
+};
 use std::path::PathBuf;
 use tracing::{info, warn};
 
-use super::{RagFs, TTL, reply_file_bytes};
+use super::{GENERATION, RagFs, TTL, reply_file_bytes};
 use crate::inode::{
     APPROVE_FILE_INO, CLEANUP_FILE_INO, DEDUPE_FILE_INO, ORGANIZE_FILE_INO, PENDING_DIR_INO,
     RAGFS_DIR_INO, REJECT_FILE_INO, SEMANTIC_DIR_INO, SIMILAR_OPS_FILE_INO,
 };
 
 impl RagFs {
-    pub(crate) fn lookup_semantic_dir(&mut self, name_str: &str, reply: ReplyEntry) {
+    pub(crate) fn lookup_semantic_dir(&self, name_str: &str, reply: ReplyEntry) {
         match name_str {
             ".organize" => {
                 let attr = self.make_attr(ORGANIZE_FILE_INO, FileType::RegularFile, 0);
-                reply.entry(&TTL, &attr, 0);
+                reply.entry(&TTL, &attr, GENERATION);
             }
             ".similar" => {
                 let content = self
@@ -29,7 +30,7 @@ impl RagFs {
                 );
                 let mut cache = self.runtime.block_on(self.content_cache.write());
                 cache.insert(SIMILAR_OPS_FILE_INO, content);
-                reply.entry(&TTL, &attr, 0);
+                reply.entry(&TTL, &attr, GENERATION);
             }
             ".cleanup" => {
                 let content = self
@@ -42,7 +43,7 @@ impl RagFs {
                 );
                 let mut cache = self.runtime.block_on(self.content_cache.write());
                 cache.insert(CLEANUP_FILE_INO, content);
-                reply.entry(&TTL, &attr, 0);
+                reply.entry(&TTL, &attr, GENERATION);
             }
             ".dedupe" => {
                 let content = self
@@ -52,25 +53,25 @@ impl RagFs {
                     self.make_attr(DEDUPE_FILE_INO, FileType::RegularFile, content.len() as u64);
                 let mut cache = self.runtime.block_on(self.content_cache.write());
                 cache.insert(DEDUPE_FILE_INO, content);
-                reply.entry(&TTL, &attr, 0);
+                reply.entry(&TTL, &attr, GENERATION);
             }
             ".pending" => {
                 let attr = self.make_attr(PENDING_DIR_INO, FileType::Directory, 0);
-                reply.entry(&TTL, &attr, 0);
+                reply.entry(&TTL, &attr, GENERATION);
             }
             ".approve" => {
                 let attr = self.make_attr(APPROVE_FILE_INO, FileType::RegularFile, 0);
-                reply.entry(&TTL, &attr, 0);
+                reply.entry(&TTL, &attr, GENERATION);
             }
             ".reject" => {
                 let attr = self.make_attr(REJECT_FILE_INO, FileType::RegularFile, 0);
-                reply.entry(&TTL, &attr, 0);
+                reply.entry(&TTL, &attr, GENERATION);
             }
-            _ => reply.error(ENOENT),
+            _ => reply.error(Errno::ENOENT),
         }
     }
 
-    pub(crate) fn lookup_pending_dir(&mut self, name_str: &str, reply: ReplyEntry) {
+    pub(crate) fn lookup_pending_dir(&self, name_str: &str, reply: ReplyEntry) {
         let plan_ids = self
             .runtime
             .block_on(self.semantic_manager.get_pending_plan_ids());
@@ -83,13 +84,13 @@ impl RagFs {
             let attr = self.make_attr(ino, FileType::RegularFile, content.len() as u64);
             let mut cache = self.runtime.block_on(self.content_cache.write());
             cache.insert(ino, content);
-            reply.entry(&TTL, &attr, 0);
+            reply.entry(&TTL, &attr, GENERATION);
             return;
         }
-        reply.error(ENOENT);
+        reply.error(Errno::ENOENT);
     }
 
-    pub(crate) fn getattr_semantic(&mut self, ino: u64, reply: ReplyAttr) {
+    pub(crate) fn getattr_semantic(&self, ino: u64, reply: ReplyAttr) {
         match ino {
             SEMANTIC_DIR_INO | PENDING_DIR_INO => {
                 let attr = self.make_attr(ino, FileType::Directory, 0);
@@ -129,11 +130,11 @@ impl RagFs {
                 let attr = self.make_attr(ino, FileType::RegularFile, 0);
                 reply.attr(&TTL, &attr);
             }
-            _ => reply.error(ENOENT),
+            _ => reply.error(Errno::ENOENT),
         }
     }
 
-    pub(crate) fn read_semantic(&mut self, ino: u64, offset: i64, size: u32, reply: ReplyData) {
+    pub(crate) fn read_semantic(&self, ino: u64, offset: u64, size: u32, reply: ReplyData) {
         match ino {
             SIMILAR_OPS_FILE_INO => {
                 let content = self
@@ -156,11 +157,11 @@ impl RagFs {
             ORGANIZE_FILE_INO | APPROVE_FILE_INO | REJECT_FILE_INO => {
                 reply.data(&[]);
             }
-            _ => reply.error(ENOENT),
+            _ => reply.error(Errno::ENOENT),
         }
     }
 
-    pub(crate) fn readdir_semantic(&mut self, ino: u64, offset: i64, mut reply: ReplyDirectory) {
+    pub(crate) fn readdir_semantic(&self, ino: u64, offset: u64, mut reply: ReplyDirectory) {
         match ino {
             SEMANTIC_DIR_INO => {
                 let entries = [
@@ -176,7 +177,7 @@ impl RagFs {
                 ];
 
                 for (i, (ino, kind, name)) in entries.iter().enumerate().skip(offset as usize) {
-                    if reply.add(*ino, (i + 1) as i64, *kind, name) {
+                    if reply.add(INodeNo(*ino), (i + 1) as u64, *kind, name) {
                         break;
                     }
                 }
@@ -199,17 +200,17 @@ impl RagFs {
                 }
 
                 for (i, (ino, kind, name)) in entries.iter().enumerate().skip(offset as usize) {
-                    if reply.add(*ino, (i + 1) as i64, *kind, name) {
+                    if reply.add(INodeNo(*ino), (i + 1) as u64, *kind, name) {
                         break;
                     }
                 }
                 reply.ok();
             }
-            _ => reply.error(ENOENT),
+            _ => reply.error(Errno::ENOENT),
         }
     }
 
-    pub(crate) fn write_semantic(&mut self, ino: u64, data: &[u8], reply: ReplyWrite) {
+    pub(crate) fn write_semantic(&self, ino: u64, data: &[u8], reply: ReplyWrite) {
         if ino == ORGANIZE_FILE_INO {
             let data_str = String::from_utf8_lossy(data).to_string();
             let semantic_manager = self.semantic_manager.clone();

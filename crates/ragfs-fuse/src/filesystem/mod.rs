@@ -1,8 +1,9 @@
 //! FUSE filesystem implementation.
 
 use fuser::{
-    FileAttr, FileType, Filesystem, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty,
-    ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
+    BsdFileFlags, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo,
+    LockOwner, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
+    ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow, WriteFlags,
 };
 use ragfs_core::{Embedder, VectorStore};
 use ragfs_query::QueryExecutor;
@@ -37,6 +38,7 @@ mod semantic;
 
 pub(crate) const TTL: Duration = Duration::from_secs(1);
 pub(crate) const BLOCK_SIZE: u64 = 512;
+pub(crate) const GENERATION: Generation = Generation(0);
 
 /// RAGFS FUSE filesystem.
 pub struct RagFs {
@@ -190,7 +192,7 @@ impl RagFs {
         let ctime = UNIX_EPOCH + Duration::from_secs(metadata.ctime() as u64);
 
         Some(FileAttr {
-            ino,
+            ino: INodeNo(ino),
             size: metadata.len(),
             blocks: metadata.len().div_ceil(BLOCK_SIZE),
             atime,
@@ -215,7 +217,7 @@ impl RagFs {
         let uid = unsafe { libc::getuid() };
         let gid = unsafe { libc::getgid() };
         FileAttr {
-            ino,
+            ino: INodeNo(ino),
             size,
             blocks: size.div_ceil(BLOCK_SIZE),
             atime: now,
@@ -436,7 +438,7 @@ Limits (honest)
     }
 }
 
-pub(crate) fn reply_file_bytes(reply: ReplyData, content: &[u8], offset: i64, size: u32) {
+pub(crate) fn reply_file_bytes(reply: ReplyData, content: &[u8], offset: u64, size: u32) {
     let offset = offset as usize;
     let size = size as usize;
     if offset >= content.len() {
@@ -448,11 +450,7 @@ pub(crate) fn reply_file_bytes(reply: ReplyData, content: &[u8], offset: i64, si
 }
 
 impl Filesystem for RagFs {
-    fn init(
-        &mut self,
-        _req: &Request<'_>,
-        _config: &mut fuser::KernelConfig,
-    ) -> Result<(), libc::c_int> {
+    fn init(&mut self, _req: &Request, _config: &mut fuser::KernelConfig) -> std::io::Result<()> {
         debug!("FUSE init for source: {:?}", self.source);
         Ok(())
     }
@@ -461,7 +459,8 @@ impl Filesystem for RagFs {
         debug!("FUSE destroy");
     }
 
-    fn lookup(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
+    fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
+        let parent = u64::from(parent);
         let name_str = name.to_string_lossy();
         debug!("lookup: parent={}, name={}", parent, name_str);
 
@@ -477,7 +476,8 @@ impl Filesystem for RagFs {
         }
     }
 
-    fn getattr(&mut self, _req: &Request<'_>, ino: u64, _fh: Option<u64>, reply: ReplyAttr) {
+    fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
+        let ino = u64::from(ino);
         debug!("getattr: ino={}", ino);
 
         match ino {
@@ -505,16 +505,17 @@ impl Filesystem for RagFs {
     }
 
     fn read(
-        &mut self,
-        _req: &Request<'_>,
-        ino: u64,
-        _fh: u64,
-        offset: i64,
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        _fh: FileHandle,
+        offset: u64,
         size: u32,
-        _flags: i32,
-        _lock_owner: Option<u64>,
+        _flags: OpenFlags,
+        _lock_owner: Option<LockOwner>,
         reply: ReplyData,
     ) {
+        let ino = u64::from(ino);
         debug!("read: ino={}, offset={}, size={}", ino, offset, size);
 
         let cache = self.runtime.block_on(self.content_cache.read());
@@ -539,13 +540,14 @@ impl Filesystem for RagFs {
     }
 
     fn readdir(
-        &mut self,
-        _req: &Request<'_>,
-        ino: u64,
-        _fh: u64,
-        offset: i64,
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        _fh: FileHandle,
+        offset: u64,
         reply: ReplyDirectory,
     ) {
+        let ino = u64::from(ino);
         debug!("readdir: ino={}, offset={}", ino, offset);
 
         match ino {
@@ -561,28 +563,29 @@ impl Filesystem for RagFs {
         }
     }
 
-    fn open(&mut self, _req: &Request<'_>, ino: u64, flags: i32, reply: ReplyOpen) {
-        debug!("open: ino={}, flags={}", ino, flags);
-        reply.opened(0, 0);
+    fn open(&self, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
+        debug!("open: ino={}, flags={:?}", ino, flags);
+        reply.opened(FileHandle(0), FopenFlags::empty());
     }
 
-    fn opendir(&mut self, _req: &Request<'_>, ino: u64, flags: i32, reply: ReplyOpen) {
-        debug!("opendir: ino={}, flags={}", ino, flags);
-        reply.opened(0, 0);
+    fn opendir(&self, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
+        debug!("opendir: ino={}, flags={:?}", ino, flags);
+        reply.opened(FileHandle(0), FopenFlags::empty());
     }
 
     fn write(
-        &mut self,
-        _req: &Request<'_>,
-        ino: u64,
-        _fh: u64,
-        _offset: i64,
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        _fh: FileHandle,
+        _offset: u64,
         data: &[u8],
-        _write_flags: u32,
-        _flags: i32,
-        _lock_owner: Option<u64>,
+        _write_flags: WriteFlags,
+        _flags: OpenFlags,
+        _lock_owner: Option<LockOwner>,
         reply: ReplyWrite,
     ) {
+        let ino = u64::from(ino);
         debug!("write: ino={}, len={}", ino, data.len());
 
         match ino {
@@ -598,62 +601,70 @@ impl Filesystem for RagFs {
         }
     }
 
-    fn forget(&mut self, _req: &Request<'_>, ino: u64, nlookup: u64) {
+    fn forget(&self, _req: &Request, ino: INodeNo, nlookup: u64) {
+        let ino = u64::from(ino);
         debug!("forget: ino={}, nlookup={}", ino, nlookup);
         let mut inodes = self.runtime.block_on(self.inodes.write());
         inodes.forget(ino, nlookup);
     }
 
     fn create(
-        &mut self,
-        _req: &Request<'_>,
-        parent: u64,
+        &self,
+        _req: &Request,
+        parent: INodeNo,
         name: &OsStr,
         mode: u32,
         umask: u32,
         flags: i32,
         reply: ReplyCreate,
     ) {
-        self.create_passthrough(parent, name, mode, umask, flags, reply);
+        self.create_passthrough(u64::from(parent), name, mode, umask, flags, reply);
     }
 
-    fn unlink(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
-        self.unlink_passthrough(parent, name, reply);
+    fn unlink(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+        self.unlink_passthrough(u64::from(parent), name, reply);
     }
 
     fn mkdir(
-        &mut self,
-        _req: &Request<'_>,
-        parent: u64,
+        &self,
+        _req: &Request,
+        parent: INodeNo,
         name: &OsStr,
         mode: u32,
         umask: u32,
         reply: ReplyEntry,
     ) {
-        self.mkdir_passthrough(parent, name, mode, umask, reply);
+        self.mkdir_passthrough(u64::from(parent), name, mode, umask, reply);
     }
 
-    fn rmdir(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
-        self.rmdir_passthrough(parent, name, reply);
+    fn rmdir(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+        self.rmdir_passthrough(u64::from(parent), name, reply);
     }
 
     fn rename(
-        &mut self,
-        _req: &Request<'_>,
-        parent: u64,
+        &self,
+        _req: &Request,
+        parent: INodeNo,
         name: &OsStr,
-        newparent: u64,
+        newparent: INodeNo,
         newname: &OsStr,
-        flags: u32,
+        flags: RenameFlags,
         reply: ReplyEmpty,
     ) {
-        self.rename_passthrough(parent, name, newparent, newname, flags, reply);
+        self.rename_passthrough(
+            u64::from(parent),
+            name,
+            u64::from(newparent),
+            newname,
+            flags,
+            reply,
+        );
     }
 
     fn setattr(
-        &mut self,
-        _req: &Request<'_>,
-        ino: u64,
+        &self,
+        _req: &Request,
+        ino: INodeNo,
         mode: Option<u32>,
         uid: Option<u32>,
         gid: Option<u32>,
@@ -661,15 +672,27 @@ impl Filesystem for RagFs {
         atime: Option<TimeOrNow>,
         mtime: Option<TimeOrNow>,
         ctime: Option<SystemTime>,
-        fh: Option<u64>,
+        fh: Option<FileHandle>,
         crtime: Option<SystemTime>,
         chgtime: Option<SystemTime>,
         bkuptime: Option<SystemTime>,
-        flags: Option<u32>,
+        flags: Option<BsdFileFlags>,
         reply: ReplyAttr,
     ) {
         self.setattr_passthrough(
-            ino, mode, uid, gid, size, atime, mtime, ctime, fh, crtime, chgtime, bkuptime, flags,
+            u64::from(ino),
+            mode,
+            uid,
+            gid,
+            size,
+            atime,
+            mtime,
+            ctime,
+            fh,
+            crtime,
+            chgtime,
+            bkuptime,
+            flags,
             reply,
         );
     }
@@ -933,7 +956,7 @@ mod tests {
         let fs = RagFs::new(PathBuf::from("/tmp/test"));
         let attr = fs.make_attr(100, fuser::FileType::Directory, 0);
 
-        assert_eq!(attr.ino, 100);
+        assert_eq!(u64::from(attr.ino), 100);
         assert_eq!(attr.size, 0);
         assert_eq!(attr.kind, fuser::FileType::Directory);
         assert_eq!(attr.perm, 0o755);
@@ -945,7 +968,7 @@ mod tests {
         let fs = RagFs::new(PathBuf::from("/tmp/test"));
         let attr = fs.make_attr(200, fuser::FileType::RegularFile, 1024);
 
-        assert_eq!(attr.ino, 200);
+        assert_eq!(u64::from(attr.ino), 200);
         assert_eq!(attr.size, 1024);
         assert_eq!(attr.kind, fuser::FileType::RegularFile);
         assert_eq!(attr.perm, 0o644);

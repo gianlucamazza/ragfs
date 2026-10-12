@@ -522,16 +522,21 @@ async fn run(cli: Cli) -> Result<()> {
                 config.query.max_limit,
             );
 
-            // Build mount options
-            let mut options = vec![
+            // Build mount config. fuser 0.18 moved ACL (`allow_other` / `allow_root`)
+            // off `MountOption` onto `Config::acl`. `AutoUnmount` requires
+            // `acl != Owner`; `RootAndOwner` keeps the default mount private
+            // while still satisfying that constraint.
+            let mut fuse_config = fuser::Config::default();
+            fuse_config.mount_options = vec![
                 fuser::MountOption::FSName("ragfs".to_string()),
                 fuser::MountOption::AutoUnmount,
                 fuser::MountOption::DefaultPermissions,
             ];
-
-            if allow_other || config.mount.allow_other {
-                options.push(fuser::MountOption::AllowOther);
-            }
+            fuse_config.acl = if allow_other || config.mount.allow_other {
+                fuser::SessionACL::All
+            } else {
+                fuser::SessionACL::RootAndOwner
+            };
 
             // Mount. Background forks happen in `main` before Tokio starts.
             if foreground {
@@ -543,12 +548,12 @@ async fn run(cli: Cli) -> Result<()> {
                 );
             }
 
-            // FUSE callbacks call `Handle::block_on`. That panics if `mount2`
+            // FUSE callbacks call `Handle::block_on`. That panics if `mount`
             // itself is running on a Tokio worker, so use a dedicated OS thread
             // and wait off the worker so the reindex task stays alive.
             let fuse_thread = std::thread::Builder::new()
                 .name("ragfs-fuse".into())
-                .spawn(move || fuser::mount2(fs, &mountpoint, &options))
+                .spawn(move || fuser::mount(fs, &mountpoint, &fuse_config))
                 .context("Failed to spawn FUSE mount thread")?;
 
             let join_result = tokio::task::spawn_blocking(move || fuse_thread.join())
@@ -564,7 +569,7 @@ async fn run(cli: Cli) -> Result<()> {
             // Cleanup reindex handler on unmount
             reindex_handler.abort();
 
-            // `mount2` returns only once the filesystem is unmounted, so the
+            // `mount` returns only once the filesystem is unmounted, so the
             // pid file is stale from here on.
             if !foreground && let Ok(pid_path) = get_pid_path(&source) {
                 let _ = std::fs::remove_file(pid_path);
