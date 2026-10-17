@@ -174,7 +174,7 @@ fn collect_part_names(
     let mut names: Vec<String> = (0..archive.len())
         .filter_map(|i| {
             let file = archive.by_index(i).ok()?;
-            let name = file.name().to_string();
+            let name = file.name().ok()?.into_owned();
             include(&name).then_some(name)
         })
         .collect();
@@ -254,7 +254,10 @@ fn read_entry_bytes<R: Read + ?Sized>(
     remaining: &mut u64,
     max_entry: u64,
 ) -> Result<Vec<u8>, ExtractError> {
-    let name = file.name().to_string();
+    let name = file
+        .name()
+        .map_err(|e| ExtractError::Parse(format!("invalid ZIP entry name: {e}")))?
+        .into_owned();
     let declared = file.size();
     if declared > max_entry {
         return Err(ExtractError::Failed(format!(

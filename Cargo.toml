@@ -104,7 +104,9 @@ image = { version = "0.25", default-features = false, features = [
 ] }
 
 # Office (OOXML / ODT) zip+xml
-zip = "8.6"
+# 9.0.1 is the first release that patches RUSTSEC-2026-0367/0368/0369
+# (GHSA-4684-h2q9-2vcp / 0369 remains unpatched in 9.0.0).
+zip = "9.0.1"
 
 # Tokenization
 tiktoken-rs = "0.12"
@@ -206,3 +208,9 @@ manual_assert_eq = "allow"
 assert_is_empty = "allow"
 # Clippy 1.99: `#[async_trait]` methods returning Result look like double must_use.
 double_must_use = "allow"
+
+# candle-core 0.11.0 requires zip ^8.6.0, which is in the RUSTSEC-2026-0367/0368/0369
+# range. Patch it with a local copy of 0.11.0 that takes zip 9.0.1 until
+# huggingface/candle#4041 is published.
+[patch.crates-io]
+candle-core = { path = "vendor/candle-core" }
