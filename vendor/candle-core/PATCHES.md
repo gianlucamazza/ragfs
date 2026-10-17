@@ -5,7 +5,8 @@ vulnerable to RUSTSEC-2026-0367, RUSTSEC-2026-0368, and RUSTSEC-2026-0369
 (patched in zip 9.0.1). Hugging Face has not yet released a crates.io
 build that takes zip 9 (`huggingface/candle#4041`).
 
-This directory is the 0.11.0 crate plus the zip 9 API adjustments:
+This directory is the 0.11.0 crate **library sources only** (tests,
+benches, and examples omitted) plus the zip 9 API adjustments:
 
 - `Cargo.toml`: `zip` 8.6.0 → 9.0.1; rust/clippy lints allowed so CI
   `RUSTFLAGS=-Dwarnings` does not fail on unmodified upstream 0.11.0
