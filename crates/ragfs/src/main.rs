@@ -153,14 +153,12 @@ enum Commands {
 
         /// Save a local retrieval receipt (no network). Omit PATH to write under
         /// `<index-dir>/receipts/` (see `USER_GUIDE`).
-        #[arg(
-            long,
-            value_name = "PATH",
-            num_args = 0..=1,
-            default_missing_value = "__default__",
-            hide_default_value = true
-        )]
-        save_receipt: Option<PathBuf>,
+        ///
+        /// Clap encodes the optional-optional flag as:
+        /// `None` = omitted, `Some(None)` = `--save-receipt`, `Some(Some(p))` = `--save-receipt p`.
+        #[allow(clippy::option_option)]
+        #[arg(long, value_name = "PATH", num_args = 0..=1)]
+        save_receipt: Option<Option<PathBuf>>,
     },
 
     /// Show index status
@@ -720,9 +718,6 @@ async fn run(cli: Cli) -> Result<()> {
             };
 
             if let Some(requested) = save_receipt_opt {
-                let requested = (!requested.as_os_str().is_empty()
-                    && requested.as_os_str() != "__default__")
-                    .then_some(requested);
                 let timestamp = chrono::Utc::now();
                 let receipt_path = resolve_receipt_path(
                     requested.as_deref(),
@@ -862,5 +857,47 @@ fn truncate(s: &str, max_len: usize) -> String {
         s
     } else {
         format!("{}...", &s[..max_len.saturating_sub(3)])
+    }
+}
+
+#[cfg(test)]
+mod save_receipt_flag {
+    use super::*;
+
+    #[test]
+    fn absent_flag_is_none() {
+        let cli = Cli::try_parse_from(["ragfs", "query", "/tmp", "q"]).unwrap();
+        match cli.command {
+            Commands::Query { save_receipt, .. } => assert_eq!(save_receipt, None),
+            _ => panic!("expected query"),
+        }
+    }
+
+    #[test]
+    fn bare_flag_is_some_none() {
+        let cli = Cli::try_parse_from(["ragfs", "query", "/tmp", "q", "--save-receipt"]).unwrap();
+        match cli.command {
+            Commands::Query { save_receipt, .. } => assert_eq!(save_receipt, Some(None)),
+            _ => panic!("expected query"),
+        }
+    }
+
+    #[test]
+    fn path_flag_is_some_some_including_literal_default_sentinel() {
+        let cli = Cli::try_parse_from([
+            "ragfs",
+            "query",
+            "/tmp",
+            "q",
+            "--save-receipt",
+            "__default__",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Query { save_receipt, .. } => {
+                assert_eq!(save_receipt, Some(Some(PathBuf::from("__default__"))));
+            }
+            _ => panic!("expected query"),
+        }
     }
 }

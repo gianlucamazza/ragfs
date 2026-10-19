@@ -293,6 +293,33 @@ fn force_reindex_changes_revision() {
     );
 }
 
+fn run_query_json(
+    h: &Harness,
+    query: &str,
+    extra: &[&str],
+) -> (bool, String, Option<serde_json::Value>) {
+    let mut cmd = h.ragfs();
+    cmd.args([
+        "--format",
+        "json",
+        "query",
+        h.source.to_str().unwrap(),
+        query,
+    ]);
+    cmd.args(extra);
+    let output = cmd.output().expect("run ragfs query");
+    let blob = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json = output
+        .status
+        .success()
+        .then(|| parse_json_stdout(&output.stdout));
+    (output.status.success(), blob, json)
+}
+
 #[test]
 fn save_receipt_writes_default_index_dir_and_round_trips() {
     let h = Harness::new();
@@ -345,6 +372,109 @@ fn save_receipt_writes_default_index_dir_and_round_trips() {
         json["embedding_model"].as_str().unwrap()
     );
     assert!(!receipt.timestamp.to_rfc3339().is_empty());
+}
+
+#[test]
+fn save_receipt_none_default_and_explicit_paths() {
+    let h = Harness::new();
+    disable_hybrid(&h);
+    h.write_source("note.md", "receipt cases");
+    index_ok(&mut h.ragfs(), &h.source);
+    let receipts_dir = index_dir(&h).join("receipts");
+
+    let (ok, blob, json) = run_query_json(&h, "none", &[]);
+    assert!(ok, "query without --save-receipt failed: {blob}");
+    let json = json.expect("json");
+    assert!(
+        json.get("receipt_path").is_none(),
+        "absent flag must not save a receipt: {json}"
+    );
+    assert!(
+        !receipts_dir.exists() || fs::read_dir(&receipts_dir).map_or(true, |d| d.count() == 0),
+        "absent flag must not create receipts"
+    );
+
+    let (ok, blob, json) = run_query_json(&h, "default", &["--save-receipt"]);
+    assert!(ok, "bare --save-receipt failed: {blob}");
+    let json = json.expect("json");
+    let default_path = PathBuf::from(json["receipt_path"].as_str().expect("receipt_path"));
+    assert!(
+        default_path.starts_with(&receipts_dir),
+        "bare flag uses the index receipts dir: {}",
+        default_path.display()
+    );
+    assert!(default_path.exists());
+
+    let explicit = h.source.parent().unwrap().join("explicit.json");
+    let (ok, blob, json) = run_query_json(
+        &h,
+        "explicit",
+        &["--save-receipt", explicit.to_str().unwrap()],
+    );
+    assert!(ok, "explicit --save-receipt path failed: {blob}");
+    let json = json.expect("json");
+    assert_eq!(
+        json["receipt_path"].as_str().unwrap(),
+        explicit.to_str().unwrap()
+    );
+    assert!(explicit.is_file());
+    assert_eq!(
+        ragfs::receipt::load_receipt(&explicit).unwrap().query,
+        "explicit"
+    );
+
+    let as_file = h
+        .source
+        .parent()
+        .unwrap()
+        .join("as_file")
+        .join("__default__");
+    fs::create_dir_all(as_file.parent().unwrap()).unwrap();
+    let (ok, blob, json) = run_query_json(
+        &h,
+        "sentinel-file",
+        &["--save-receipt", as_file.to_str().unwrap()],
+    );
+    assert!(ok, "literal __default__ file path failed: {blob}");
+    let json = json.expect("json");
+    assert_eq!(
+        json["receipt_path"].as_str().unwrap(),
+        as_file.to_str().unwrap()
+    );
+    assert!(
+        as_file.is_file(),
+        "literal __default__ must be a receipt file"
+    );
+    assert_eq!(
+        ragfs::receipt::load_receipt(&as_file).unwrap().query,
+        "sentinel-file"
+    );
+
+    let as_dir = h
+        .source
+        .parent()
+        .unwrap()
+        .join("as_dir")
+        .join("__default__");
+    fs::create_dir_all(&as_dir).unwrap();
+    let (ok, blob, json) = run_query_json(
+        &h,
+        "sentinel-dir",
+        &["--save-receipt", as_dir.to_str().unwrap()],
+    );
+    assert!(ok, "literal __default__ directory path failed: {blob}");
+    let json = json.expect("json");
+    let written = PathBuf::from(json["receipt_path"].as_str().expect("receipt_path"));
+    assert!(
+        written.starts_with(&as_dir) && written != as_dir,
+        "directory named __default__ should receive the default filename: {}",
+        written.display()
+    );
+    assert!(written.is_file());
+    assert_eq!(
+        ragfs::receipt::load_receipt(&written).unwrap().query,
+        "sentinel-dir"
+    );
 }
 
 #[test]
