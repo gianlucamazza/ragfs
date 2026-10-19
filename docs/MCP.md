@@ -73,6 +73,8 @@ Mutating tools (`ragfs_delete_to_trash`, `ragfs_restore_from_trash`, `ragfs_undo
 
 The jail root for those tools is allowlisted at startup: `RAGFS_SOURCE_PATH` plus optional `RAGFS_ALLOWED_ROOTS` (`os.pathsep`-separated), each resolved with `realpath`. `index` must be one of those roots, or a 16-hex index id whose recorded source is known (the `{indices}/{id}/source` sidecar, or an allowlisted root whose CLI id matches). Any other `index` value is rejected. Hex ids never fall back to `RAGFS_SOURCE_PATH` or the current working directory.
 
+`ragfs_similar` applies the same allowlist to `file_path`: the path is resolved with `realpath` (symlinks included) and must land inside an allowlisted root. Paths outside those roots, `..` traversal that leaves a root, and in-root symlinks that point outside are rejected. The error does not include the resolved absolute path.
+
 Or using Python directly:
 
 ```json
@@ -153,7 +155,7 @@ Find files similar to a given file.
 **Parameters:**
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `file_path` | string | required | Path to the source file |
+| `file_path` | string | required | Path to the source file. Must resolve (`realpath`, including symlinks) inside an allowlisted root (`RAGFS_SOURCE_PATH` or `RAGFS_ALLOWED_ROOTS`). |
 | `index` | string | source path | Source directory or 16-hex id. Default: `RAGFS_SOURCE_PATH` or cwd |
 | `limit` | integer | 5 | Maximum similar files to return |
 

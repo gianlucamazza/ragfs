@@ -73,6 +73,7 @@ _INDEX_HASH_RE = re.compile(r"^[0-9a-f]{16}$", re.IGNORECASE)
 INDEX_SOURCE_FILENAME = "source"
 
 INDEX_NOT_ALLOWED_ERROR = "Index is not an allowed root"
+FILE_PATH_NOT_ALLOWED_ERROR = "file_path is outside allowed roots"
 WRITES_DISABLED_ERROR = (
     "Mutating MCP tools are disabled. Set RAGFS_MCP_ALLOW_WRITES=1 to enable writes."
 )
@@ -80,6 +81,10 @@ WRITES_DISABLED_ERROR = (
 
 class IndexNotAllowedError(ValueError):
     """Raised when ``index`` is not an allowlisted root or a known index source."""
+
+
+class FilePathNotAllowedError(ValueError):
+    """Raised when ``file_path`` resolves outside the allowlisted roots."""
 
 
 def _project_data_dir() -> Path:
@@ -182,6 +187,25 @@ def build_allowed_roots() -> frozenset[str]:
             if part:
                 roots.append(_realpath(part))
     return frozenset(roots)
+
+
+def _is_under_root(resolved: str, root: str) -> bool:
+    """Return True if ``resolved`` is ``root`` or a descendant."""
+    return Path(resolved).is_relative_to(root)
+
+
+def resolve_file_under_allowed_roots(file_path: str) -> str:
+    """Resolve ``file_path`` with ``realpath`` and require an allowlisted root.
+
+    Uses :func:`build_allowed_roots` (``RAGFS_SOURCE_PATH`` plus
+    ``RAGFS_ALLOWED_ROOTS``). Symlinks are followed. The raised error
+    does not include the resolved absolute path.
+    """
+    resolved = _realpath(file_path)
+    for root in build_allowed_roots():
+        if _is_under_root(resolved, root):
+            return resolved
+    raise FilePathNotAllowedError(FILE_PATH_NOT_ALLOWED_ERROR)
 
 
 def writes_allowed() -> bool:
@@ -362,6 +386,8 @@ async def ragfs_similar(
 
     Args:
         file_path: Path to the source file to find similar files for.
+            Must resolve (realpath, including symlinks) inside an
+            allowlisted root (RAGFS_SOURCE_PATH or RAGFS_ALLOWED_ROOTS).
         index: Source directory (same path as `ragfs index`) or 16-hex index id.
             Defaults to RAGFS_SOURCE_PATH or the current working directory.
         limit: Maximum number of similar files to return (default: 5).
@@ -371,9 +397,14 @@ async def ragfs_similar(
     """
     import json
 
-    source = Path(file_path)
+    try:
+        source_resolved = resolve_file_under_allowed_roots(file_path)
+    except FilePathNotAllowedError:
+        return _json_error(FILE_PATH_NOT_ALLOWED_ERROR)
+
+    source = Path(source_resolved)
     if not source.exists():
-        return json.dumps({"error": f"File not found: {file_path}"})
+        return json.dumps({"error": "File not found"})
 
     try:
         from ragfs import RagfsDocumentLoader, RagfsRetriever

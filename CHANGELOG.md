@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - MCP batch operations construct the safety manager with the source tree as the jail and the index data dir for trash/history, so deletes can be undone. If soft-delete fails, the operation fails instead of permanently removing the file.
 
+### Security
+- MCP `ragfs_similar` resolves `file_path` with `realpath` (symlinks included) and rejects paths outside the allowlisted roots (`RAGFS_SOURCE_PATH` plus `RAGFS_ALLOWED_ROOTS`). The error does not echo the resolved absolute path.
+
 ## [0.2.1] - 2026-10-10
 
 ### Security
