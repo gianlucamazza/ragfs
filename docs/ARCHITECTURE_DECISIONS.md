@@ -583,11 +583,12 @@ Each record is one *fact revision*:
 FactRevision
   fact_id        stable key (e.g. "user.employer")
   revision_id    unique id for this version
-  value          canonical string (the current or past payload)
+  value          string | null
+                 (null is the deletion sentinel; otherwise the payload)
   supersedes     revision_id of the previous version, or null
   valid_from     RFC 3339 UTC
   valid_to       RFC 3339 UTC or null (open interval)
-  source         { uri, kind, recorded_at }
+  source         { uri: string, kind: string, recorded_at: RFC 3339 UTC }
                    kind ∈ {user-utterance, document, system}
   provenance     free-form citation of the ingest artefact
                  (path, session id, turn id)
@@ -595,8 +596,8 @@ FactRevision
 
 Chains are linear: at most one successor per `revision_id`. Overlapping
 `valid_from`/`valid_to` on the same `fact_id` is a dataset error; the
-loader rejects it. A deleted fact is a revision whose `value` is the
-sentinel `null` and whose `valid_to` is set.
+loader rejects it. A deleted fact is a revision whose `value` is `null`
+and whose `valid_to` is set.
 
 #### Query semantics
 
@@ -604,18 +605,32 @@ For a query time `t` (default: now) and `fact_id`:
 
 1. **Current** — the unique revision where
    `valid_from ≤ t` and (`valid_to` is null or `t < valid_to`).
-2. **Replaced** — that revision’s `supersedes` payload, or “none”.
-3. **Source** — the current revision’s `source.uri` and `kind`.
+2. **Replaced** — that revision’s superseded `value`, or `null` if
+   `supersedes` is null.
+3. **Source** — the current revision’s `source` object (`uri` and `kind`).
 
-The required answer shape is a JSON object
-`{"current": ..., "replaced": ..., "source": ...}` (string fields;
-`replaced` may be `null`). Gold is exact on those three fields for
-**strict** scoring. **Lenient** scoring allows equivalent surface forms
-on `current` and `replaced` (Unicode NFKC, case-fold, whitespace
-collapse) but still requires the `source.uri` to match exactly.
+The required answer shape (every adapter, every item):
 
-Abstention gold: if no revision is valid at `t`, `current` is `null` and
-the system must not invent a value.
+```json
+{
+  "current": "string or null",
+  "replaced": "string or null",
+  "source": { "uri": "string or null", "kind": "string or null" }
+}
+```
+
+`current` and `replaced` are `string | null`. `source` is always an
+object with `uri` and `kind` (`string | null` each). On **abstention**
+(no revision valid at `t`, or unknown `fact_id`):
+`current`, `replaced`, `source.uri`, and `source.kind` are all `null`.
+The system must not invent a value.
+
+Gold comparison uses the **Metrics** normalizers below. `current` and
+`replaced` use `norm_strict` / `norm_lenient` **without** English-article
+stripping (fact values may contain words like “The”). `source.uri` and
+`source.kind` are identity matches after JSON parse (no case-fold, no
+article stripping). The Metrics table is canonical; this section does
+not define a second lenient rule.
 
 #### Mapping onto ragfs (ADR-008)
 
@@ -667,16 +682,19 @@ comparative affect protocol stays in emotional-memory
 
 A single frozen scenario (illustrative ids; not a measured result):
 
-1. Ingest `employer@r1` = `"Globex"` at `t0`, source `s1`.
-2. Query at `t0+`: expect
-   `{current: "Globex", replaced: null, source: "s1"}`.
+1. Ingest `employer@r1` = `"Globex"` at `t0`, source `{uri: "s1", kind: "user-utterance"}`.
+2. Query at `t0+`: gold
+   `{current: "Globex", replaced: null, source: {uri: "s1", kind: "user-utterance"}}`.
 3. Ingest `employer@r2` superseding `r1`, value `"Acme"`, `valid_from = t1`,
-   source `s2`.
-4. Query at `t1+`: expect
-   `{current: "Acme", replaced: "Globex", source: "s2"}`.
-5. Time-travel query at `t` with `t0 ≤ t < t1`: expect
-   `{current: "Globex", replaced: null, source: "s1"}`.
-6. Unknown `fact_id`: expect `current: null` (abstention).
+   source `{uri: "s2", kind: "user-utterance"}`.
+4. Query at `t1+`: gold
+   `{current: "Acme", replaced: "Globex", source: {uri: "s2", kind: "user-utterance"}}`.
+5. Time-travel query at `t` with `t0 ≤ t < t1`: gold
+   `{current: "Globex", replaced: null, source: {uri: "s1", kind: "user-utterance"}}`.
+6. Unknown `fact_id`: gold
+   `{current: null, replaced: null, source: {uri: null, kind: null}}`.
+   Retrieval gold is empty; the item is **excluded** from recall@k
+   aggregates (see Metrics), not scored as zero.
 7. For ragfs: assert `index_revision` monotonicity on steps 1 and 3, and
    persist receipts for steps 2, 4, 5, 6.
 8. For both adapters: retrieval gold for step 4 includes the `r2`
@@ -691,19 +709,60 @@ Reported **per system, per dataset split, per ability tag**. Values in
 any published artefact are `TBD (to be measured)` until a run is
 committed.
 
+Two named normalizers are shared by every split. There is no per-section
+override except the two exclusions listed after the table.
+
+- `norm_strict`: Unicode NFKC, then trim. Case-fold off.
+- `norm_lenient`: `norm_strict`, then Unicode case-fold, then collapse
+  internal whitespace to a single space. For **free-text QA only**
+  (LongMemEval, BEAM, LoCoMo), also strip leading English articles
+  `a` / `an` / `the`. Versioned-facts `current` / `replaced` use
+  `norm_lenient` **without** article stripping. `source.uri` /
+  `source.kind` never use a normalizer (identity after JSON parse).
+
 | Metric | Definition | Notes |
 |--------|------------|-------|
-| **Exact-match (strict)** | 1 iff the normalized prediction equals the gold string (Unicode NFKC, trim, case-fold **off** for strict; answers must match gold bytes after NFKC + trim only) | Primary lexical metric. |
-| **Exact-match (lenient)** | 1 iff strict EM holds after extra normalization: Unicode case-fold, whitespace collapse, optional articles (`a`/`an`/`the`) stripped | Never substitute for strict. Always publish both. |
-| **Token F1 (strict / lenient)** | Bag-of-tokens precision/recall/F1 against gold; tokenization is whitespace after the same normalization as the EM variant | Aligns with LoCoMo’s `task_eval/evaluation.py` F1 path; do not copy unpublished scores. |
-| **Retrieval recall@k** | 1 iff at least one gold evidence id (session, turn, or file path, as declared per dataset) appears in the top-k retrieved items | `k` is pinned in the protocol (default `k=5` unless a dataset’s official script fixes another k; then **that** k is used and named). |
+| **Exact-match (strict)** | 1 iff `norm_strict(prediction) == norm_strict(gold)` | Primary lexical metric. Null equals null. |
+| **Exact-match (lenient)** | 1 iff `norm_lenient(prediction) == norm_lenient(gold)` | Never substitute for strict. Always publish both. |
+| **Token F1 (strict / lenient)** | Bag-of-tokens precision/recall/F1 against gold; tokenize on whitespace after the same named normalizer as the EM variant | Aligns with LoCoMo’s `task_eval/evaluation.py` F1 path; do not copy unpublished scores. |
+| **Retrieval recall@k** | See the gold-id and aggregation rules below. Values `TBD (to be measured)` | `k` is pinned in the protocol (default `k=5` unless a dataset’s official script fixes another k; then **that** k is used and named). |
 | **Latency per query** | Wall-clock seconds: ingest excluded; per-query retrieve+answer included. Report mean / p50 / p95 as `TBD (to be measured)` | Measured on the declared hardware in `environment`. |
 | **Cost per query** | Sum of declared API/tool charges for that query in USD, or `0` for fully local runs. If unknown, `null` and a reason string | Local ragfs embeddings after model download are `0`. An LLM judge, if enabled, **must** be included. |
 
-**Strict versus lenient** applies to EM and F1 only. Retrieval recall@k
-is evidence-id based and has a single definition. Ability-tagged
-macro-averages are unweighted across items; micro-averages across all
-items are also reported. Neither is a leaderboard rank.
+**Gold evidence ids (per dataset).** Declared in the protocol; defaults:
+
+- LongMemEval: session ids in `answer_session_ids`. Optional turn-level
+  gold (turns with `has_answer: true`) is a named protocol variant, not
+  the default.
+- LoCoMo: dialog ids in `qa[].evidence`.
+- Versioned facts: file path or memory id of each gold `FactRevision`.
+- BEAM: the probing-question evidence pointers shipped with that split,
+  named in the pin file when the split is added.
+
+**Empty gold.** Items with an empty evidence list are **excluded** from
+every retrieval aggregate (not scored as 0). They remain in EM/F1.
+This covers LoCoMo `qa[].evidence: []`, LongMemEval abstention items
+(`question_id` suffix `_abs`; the official README also skips them for
+retrieval), and versioned-facts abstention (unknown `fact_id` / no
+revision valid at `t`).
+
+**Multi-evidence.** Let `G` be the gold id set and `R_k` the retrieved
+ids in rank `1..k`. Report three columns, all `TBD (to be measured)`
+until a run exists:
+
+- `recall@k_any`: 1 iff `G ∩ R_k` is non-empty.
+- `recall@k_all`: 1 iff `G ⊆ R_k`.
+- `recall@k_frac`: `|G ∩ R_k| / |G|`.
+
+The **primary published retrieval metric** is `recall@k_all` when
+`|G| > 1`, and `recall@k_any` when `|G| = 1` (the two coincide).
+`recall@k_frac` is always reported alongside. A single “at least one
+id” number is not sufficient for multi-evidence items.
+
+**Strict versus lenient** applies to EM and F1 only. Ability-tagged
+macro-averages are unweighted across items that are **in** that metric’s
+denominator; micro-averages use the same denominator rule. Neither is a
+leaderboard rank.
 
 **LLM judge (optional, off by default).** If a future accepted phase
 enables a judge:
@@ -782,7 +841,9 @@ advantage.
     "exact_match_lenient": "TBD (to be measured)",
     "token_f1_strict": "TBD (to be measured)",
     "token_f1_lenient": "TBD (to be measured)",
-    "recall_at_k": "TBD (to be measured)",
+    "recall_at_k_any": "TBD (to be measured)",
+    "recall_at_k_all": "TBD (to be measured)",
+    "recall_at_k_frac": "TBD (to be measured)",
     "latency_s_per_query": "TBD (to be measured)",
     "cost_usd_per_query": "TBD (to be measured)",
     "judge": null
