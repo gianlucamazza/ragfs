@@ -35,13 +35,17 @@ python -m ragfs_mcp
 
 Add to your Claude Desktop config. Set `RAGFS_SOURCE_PATH` to the same directory you indexed with `ragfs index` — MCP hashes that canonical path (blake3, first 16 hex chars) and opens `~/.local/share/ragfs/indices/{16hex}/index.lance`, matching the CLI.
 
+Mutating tools are off unless `RAGFS_MCP_ALLOW_WRITES=1`. Jail roots are `RAGFS_SOURCE_PATH` plus optional `RAGFS_ALLOWED_ROOTS` (`os.pathsep`-separated), resolved with `realpath`. Hex index ids use that index's recorded source; they do not fall back to `RAGFS_SOURCE_PATH` or cwd.
+
 ```json
 {
   "mcpServers": {
     "ragfs": {
       "command": "ragfs-mcp",
       "env": {
-        "RAGFS_SOURCE_PATH": "/path/to/project"
+        "RAGFS_SOURCE_PATH": "/path/to/project",
+        "RAGFS_ALLOWED_ROOTS": "/path/to/other",
+        "RAGFS_MCP_ALLOW_WRITES": "1"
       }
     }
   }

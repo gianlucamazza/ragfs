@@ -7,15 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-<<<<<<< HEAD
-### Fixed
-- MCP batch operations construct the safety manager with the source tree as the jail and the index data dir for trash/history, so deletes can be undone. If soft-delete fails, the operation fails instead of permanently removing the file.
-=======
 ### Added
+- `RAGFS_ALLOWED_ROOTS` and `RAGFS_MCP_ALLOW_WRITES` environment variables for the MCP server.
 - Accepted ADR-009: transparent memory benchmark harness for ragfs and
   emotional-memory (protocol, pinned public datasets, versioned facts,
   strict/lenient metrics). Design only; implementation follows in phased PRs.
->>>>>>> origin/main
+
+### Changed
+- **Behaviour change:** Mutating MCP tools now need `RAGFS_MCP_ALLOW_WRITES=1` (`ragfs_delete_to_trash`, `ragfs_restore_from_trash`, `ragfs_undo`, `ragfs_approve_plan`, `ragfs_reject_plan`, and `ragfs_batch_operations` when `dry_run` is false). Reads and dry runs are unchanged.
+- MCP jail roots are allowlisted from `RAGFS_SOURCE_PATH` and optional `RAGFS_ALLOWED_ROOTS` (`os.pathsep`-separated), each resolved with `realpath`. `index` must be an allowlisted root or the recorded source of a known index; hex index ids map to that recorded source and do not fall back to `RAGFS_SOURCE_PATH` or cwd.
+
+### Fixed
+- MCP batch operations construct the safety manager with the source tree as the jail and the index data dir for trash/history, so deletes can be undone. If soft-delete fails, the operation fails instead of permanently removing the file.
 
 ## [0.2.1] - 2026-10-10
 
