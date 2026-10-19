@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-10-19
+
+
+### Added
+
+- Persist query receipts with an index revision id ([#162](https://github.com/gianlucamazza/ragfs/pull/162))
+
+### Fixed
+
+- Ignore transitive RUSTSEC-2024-0449 from lindera ([#161](https://github.com/gianlucamazza/ragfs/pull/161))
+[0.2.2]: https://github.com/gianlucamazza/ragfs/compare/v0.2.1...v0.2.2
+
+
 ## [0.2.1] - 2026-10-17
 
 
