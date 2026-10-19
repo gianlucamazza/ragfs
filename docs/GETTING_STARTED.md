@@ -173,6 +173,7 @@ Output:
 Index Status for "/home/user/my-project"
   Files:  47
   Chunks: 312
+  Revision: 3
   Updated: 2025-01-13 10:15:32
 ```
 
