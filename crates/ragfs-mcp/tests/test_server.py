@@ -231,6 +231,47 @@ class TestBatchOperations:
         # Dry run should return validation result
         assert data.get("dry_run") is True or "error" in data
 
+    @pytest.mark.asyncio
+    async def test_batch_delete_moves_to_trash_and_undo_restores(
+        self, source_path: Path, env_vars
+    ):
+        from ragfs import RagfsSafetyManager
+        from ragfs_mcp.server import (
+            get_db_path,
+            get_source_path,
+            ragfs_batch_operations,
+            ragfs_undo,
+        )
+
+        target = source_path / "batch_delete_me.txt"
+        content = "unique content for trash restore 42"
+        target.write_text(content)
+        index = str(source_path)
+
+        result = json.loads(
+            await ragfs_batch_operations(
+                operations=[{"action": "delete", "target": str(target)}],
+                atomic=True,
+                dry_run=False,
+                index=index,
+            )
+        )
+        assert result.get("success") is True, result
+        assert not target.exists()
+
+        safety = RagfsSafetyManager(get_source_path(index), get_db_path(index))
+        trash = await safety.list_trash()
+        assert any(
+            Path(entry.original_path).name == "batch_delete_me.txt" for entry in trash
+        ), trash
+
+        undo_id = result["results"][0]["undo_id"]
+        assert undo_id
+        undo = json.loads(await ragfs_undo(undo_id=undo_id, index=index))
+        assert undo.get("success") is True, undo
+        assert target.exists()
+        assert target.read_text() == content
+
 
 class TestServerConfiguration:
     """Tests for server configuration."""

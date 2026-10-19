@@ -461,6 +461,7 @@ File operations with JSON feedback and undo support.
 ```python
 from ragfs import RagfsOpsManager, Operation
 
+# source_path is the safety jail; data_dir holds trash and history
 ops = RagfsOpsManager("/path/to/source", "/path/to/db")
 
 # Single operations with feedback

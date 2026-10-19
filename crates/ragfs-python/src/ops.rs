@@ -9,7 +9,7 @@
 use pyo3::prelude::*;
 use pyo3_async_runtimes::tokio::future_into_py;
 use ragfs_fuse::ops::{BatchRequest, BatchResult, Operation, OperationResult, OpsManager};
-use ragfs_fuse::safety::SafetyManager;
+use ragfs_fuse::safety::{SafetyConfig, SafetyManager};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -391,8 +391,8 @@ impl From<&BatchResult> for PyBatchResult {
 /// ```python
 /// from ragfs import RagfsOpsManager, Operation
 ///
-/// # Create manager
-/// ops = RagfsOpsManager("/path/to/source")
+/// # Create manager (optional data_dir enables trash/undo; source is the jail)
+/// ops = RagfsOpsManager("/path/to/source", "/path/to/db")
 ///
 /// # Single operations
 /// result = await ops.create_file("newfile.txt", "Hello, World!")
@@ -427,16 +427,23 @@ impl RagfsOpsManager {
     /// Create a new operations manager.
     ///
     /// Args:
-    ///     source_path: Root directory for resolving relative paths.
-    ///     safety_source_path: Optional path for safety manager. If provided,
-    ///                         enables soft delete (trash) and undo support.
+    ///     source_path: Root directory for resolving relative paths and the
+    ///                  safety jail (soft-delete paths must stay inside it).
+    ///     data_dir: Optional directory for safety data (trash, history).
+    ///               If provided, enables soft delete and undo. When omitted,
+    ///               deletes are permanent (no safety manager).
     #[new]
-    #[pyo3(signature = (source_path, safety_source_path=None))]
-    fn new(source_path: String, safety_source_path: Option<String>) -> Self {
+    #[pyo3(signature = (source_path, data_dir=None))]
+    fn new(source_path: String, data_dir: Option<String>) -> Self {
         let source = PathBuf::from(&source_path);
 
-        let manager = if let Some(safety_path) = safety_source_path {
-            let safety_manager = SafetyManager::new(&PathBuf::from(safety_path), None);
+        let manager = if let Some(data_dir) = data_dir {
+            let config = SafetyConfig {
+                data_dir: PathBuf::from(data_dir),
+                trash_retention_days: 7,
+                soft_delete: true,
+            };
+            let safety_manager = SafetyManager::new(&source, Some(config));
             OpsManager::with_safety(source, None, None, Arc::new(safety_manager))
         } else {
             OpsManager::new(source, None, None)
@@ -472,8 +479,10 @@ impl RagfsOpsManager {
 
     /// Delete a file.
     ///
-    /// Uses soft delete (move to trash) if safety manager is enabled,
-    /// otherwise performs a hard delete.
+    /// Uses soft delete (move to trash) if a safety manager is enabled
+    /// (`data_dir` was passed to the constructor). Soft-delete failure is
+    /// an error; the file is not removed. Without a safety manager this
+    /// performs a hard delete.
     ///
     /// Args:
     ///     path: File path to delete.
