@@ -699,6 +699,8 @@ Pass the **source directory** (or the 16-hex id from `ragfs_list_indices`) as `i
 | `RAGFS_MCP_TIMEOUT_SECONDS` | `30` | Wall-clock timeout per tool call. Local gte-small search is seconds; raise this for a cold model download. `0` disables. |
 | `RAGFS_MCP_RATE_LIMIT` | `30` | Max tool calls per process in one window. Stdio has one client per process. `0` disables. |
 | `RAGFS_MCP_RATE_WINDOW_SECONDS` | `60` | Sliding window for `RAGFS_MCP_RATE_LIMIT`. |
+| `RAGFS_MCP_LOG_LEVEL` | `WARNING` | Python logging level for the MCP process (`DEBUG`, `INFO`, `WARNING`, `ERROR`). Logs go to **stderr** only. |
+| `RAGFS_MCP_AUDIT_LOG` | `1` | One structured JSON audit line per tool call on stderr. Set to `0` to disable. |
 | `RAGFS_DATA_DIR` | CLI `ProjectDirs` path (Linux: `$XDG_DATA_HOME/ragfs` if absolute) | Data root; indices are stored under `indices/{16hex}/` |
 | `RAGFS_DB_PATH` | *(unset)* | Optional explicit LanceDB path; skips hashing when set |
 | `RAGFS_MODEL_PATH` | `~/.local/share/ragfs/models` | Path to embedding model |
@@ -773,11 +775,24 @@ Check that:
 
 ### Debugging
 
-Enable verbose logging:
+`ragfs-mcp` is a Python process. `RUST_LOG` does not apply. Logs must go to **stderr** (stdout is the MCP stdio channel).
 
 ```bash
-RUST_LOG=debug ragfs-mcp
+# Python logger (exception detail is at DEBUG only)
+RAGFS_MCP_LOG_LEVEL=DEBUG ragfs-mcp
 ```
+
+Every tool call also writes one JSON audit line to stderr unless `RAGFS_MCP_AUDIT_LOG=0`. Fields: `timestamp` (UTC ISO), `tool`, redacted `args`, `outcome` (`ok` or an error code), `duration_ms`, `write` (`true`/`false`).
+
+Redaction: file bodies and batch `content` are never logged; search `query` is logged as `query_len` only; paths are relative to the matched allowlisted root or `<outside-root>` (never absolute); env values and secrets are omitted.
+
+Example audit line:
+
+```json
+{"timestamp":"2026-10-19T13:05:01.123456Z","tool":"ragfs_search","args":{"query_len":24,"index":".","limit":10,"hybrid":true},"outcome":"ok","duration_ms":42,"write":false}
+```
+
+Client-visible errors use a stable `code` plus a short `error` message. They never include absolute host paths or exception internals. Codes include `INDEX_NOT_FOUND`, `PATH_OUTSIDE_ROOT`, `WRITES_DISABLED`, `LIMIT_EXCEEDED`, `TIMEOUT`, `RATE_LIMITED`, and `INTERNAL`. Full exception text is logged at `DEBUG` on stderr only.
 
 ---
 
