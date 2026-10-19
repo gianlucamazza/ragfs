@@ -1,0 +1,6 @@
+# cargo-audit configuration. Keep in lockstep with deny.toml [advisories].ignore
+# and the rustsec/audit-check `ignore:` inputs. See docs/AUDIT.md §1.2 and #160.
+[advisories]
+ignore = [
+    "RUSTSEC-2024-0449",
+]

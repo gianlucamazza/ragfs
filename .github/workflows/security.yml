@@ -35,12 +35,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # No `ignore:` list, on purpose.
-      #
-      # It previously suppressed advisories pinned by the `lancedb` 0.23
-      # generation; the move to `lancedb` 0.37 removed every one of them, so the
-      # audit now runs unsuppressed. Re-adding an ID requires a reachability
-      # analysis and a review date in docs/AUDIT.md.
+      # Only RUSTSEC-2024-0449 is ignored (issue #160). Reachability:
+      # unsafe-libyaml is pulled by lancedb 0.37.1 → lance-index
+      # (hardcoded tokenizer-lindera) → lindera 3.0.7 → serde_yaml_ng.
+      # Re-adding an ID requires a reachability analysis and a review date
+      # in docs/AUDIT.md.
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          ignore: RUSTSEC-2024-0449
