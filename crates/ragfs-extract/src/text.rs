@@ -366,6 +366,29 @@ mod tests {
         assert!(extractor.can_extract_by_extension(Path::new("config.yml")));
     }
 
+    #[tokio::test]
+    async fn yaml_files_are_extracted_as_opaque_utf8_not_parsed() {
+        let temp_dir = tempdir().unwrap();
+        let yaml_path = temp_dir.path().join("config.yaml");
+        let yml_path = temp_dir.path().join("config.yml");
+        // Anchors, YAML 1.1 booleans, and quoted keys would change if we parsed.
+        let text = "key: &anchor value\nalias: *anchor\nyes: on\n'1': 2\n";
+        std::fs::write(&yaml_path, text).unwrap();
+        std::fs::write(&yml_path, text).unwrap();
+
+        let extractor = TextExtractor::new();
+        let yaml = extractor.extract(&yaml_path).await.unwrap();
+        let yml = extractor.extract(&yml_path).await.unwrap();
+
+        assert_eq!(yaml.text, text);
+        assert_eq!(yml.text, text);
+        assert!(
+            !yaml.text.contains("true"),
+            "must not coerce YAML 1.1 yes/on"
+        );
+        assert!(yaml.text.contains("*anchor"));
+    }
+
     #[test]
     fn test_can_extract_shell_scripts() {
         let extractor = TextExtractor::new();

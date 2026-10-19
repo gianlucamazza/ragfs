@@ -598,6 +598,23 @@ mod tests {
     }
 
     #[test]
+    fn yaml_config_is_rejected_as_toml_parse_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "mount:\n  path: /tmp\n").unwrap();
+        let err = Config::load_from(Some(path)).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            matches!(err, ConfigError::Parse(_)),
+            "YAML must not be accepted as config; got {err:?}"
+        );
+        assert!(
+            message.contains("failed to parse config file"),
+            "user-facing error must stay a TOML parse failure: {message}"
+        );
+    }
+
+    #[test]
     fn zero_positive_settings_are_errors() {
         let cases = [
             ("[embedding]\nbatch_size = 0\n", "[embedding].batch_size"),
