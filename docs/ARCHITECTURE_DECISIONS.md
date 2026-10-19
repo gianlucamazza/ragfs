@@ -474,7 +474,7 @@ surfaces.
 ## ADR-009: Transparent Memory Benchmark Harness
 
 ### Status
-Proposed
+Accepted (2026-10-19, owner)
 
 ### Context
 Public discussion of agent-memory systems often treats a single headline
@@ -925,7 +925,7 @@ metric value that was not produced by that phase’s command.
 
 | Phase | PR (after acceptance) | Scope |
 |-------|------------------------|--------|
-| **0** | This PR | ADR only. Status Proposed. No code, no config, no CI. |
+| **0** | This PR | ADR only. Status Accepted. No code, no config, no CI. |
 | **1** | Protocol + pin schema | Add `protocol.toml` / `pins.toml` schemas and the results JSON schema as docs (or a schema-only crate/module). Dry-run that checks schema, not scores. |
 | **2** | Synthetic versioned-facts v0 | Freeze the JSONL, `sha256`, and the eight-step test design as fixtures. No public datasets. |
 | **3** | `bm25` + `vector` adapters | Ingest the synthetic set only. Report EM/F1/recall@k/latency/cost as `TBD (to be measured)` until the command is run in CI or a documented local log. |
@@ -1021,7 +1021,7 @@ Social posts are not sources.
 | Blake3 hashing | Performance, reliability |
 | Tokio async | Concurrency, I/O efficiency |
 | Sidecar index revision + opt-in receipts | Backward-compatible audit of retrieval |
-| Transparent memory benchmark harness (Proposed) | Protocol, pins, and dual scoring before any published number |
+| Transparent memory benchmark harness (Accepted) | Protocol, pins, and dual scoring before any published number |
 
 These decisions collectively create a system that is:
 - **Private**: All processing local

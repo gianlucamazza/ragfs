@@ -8,9 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Proposed ADR-009: transparent memory benchmark harness for ragfs and
+- Accepted ADR-009: transparent memory benchmark harness for ragfs and
   emotional-memory (protocol, pinned public datasets, versioned facts,
-  strict/lenient metrics). Design only; no implementation until accepted.
+  strict/lenient metrics). Design only; implementation follows in phased PRs.
 
 ## [0.2.1] - 2026-10-10
 
