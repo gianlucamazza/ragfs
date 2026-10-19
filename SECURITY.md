@@ -82,8 +82,8 @@ When using RAGFS:
 
 CI runs `cargo deny check` and `cargo audit` on every PR and on a schedule
 (`security.yml`). `unmaintained` is informational for transitive crates
-(`deny.toml`: `unmaintained = "workspace"`). There is **no** `ignore:` list
-today (`ignore = []` in `deny.toml` and in the workflows).
+(`deny.toml`: `unmaintained = "workspace"`). The only `ignore:` ID today is
+`RUSTSEC-2024-0449` (scoped to `serde_yaml_ng` / issue #160).
 
 ### Severity ladder
 
@@ -100,7 +100,8 @@ advisory ID, not the Dependabot severity label.
 ### `ignore:` list
 
 - **Owner:** Lab (the maintainers of this repository).
-- **Default:** `ignore = []`. An empty list is a feature, not an omission.
+- **Default:** empty except the scoped `RUSTSEC-2024-0449` row (issue #160).
+  An extra ID is not an omission to fill in — it is a policy exception.
 - **Adding an ID** requires all of: (1) a reachability analysis (the crate is
   not in the default-feature graph, or the vulnerable function is unreachable),
   (2) a row in `docs/AUDIT.md` §1.2 with the ID, path, and a review date,

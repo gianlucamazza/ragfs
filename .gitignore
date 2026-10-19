@@ -13,6 +13,10 @@
 .env
 .env.local
 
+# CI copies `.github/ci-dep-profile.toml` here; do not commit the copy.
+# `.cargo/audit.toml` is tracked (cargo-audit ignore list).
+.cargo/config.toml
+
 # Python
 .venv/
 venv/

@@ -5,7 +5,7 @@ inside pull-request descriptions. **Update it in the same PR that changes the
 underlying fact.** If a row here disagrees with the code, the code wins and the
 row is a bug.
 
-Last updated: 2026-10-17.
+Last updated: 2026-10-19.
 
 ---
 
@@ -19,10 +19,11 @@ report a slightly different set of IDs than the numbers below.
 |---|---:|---:|
 | Vulnerabilities | 28 | **0** |
 | Unsound (entries) | 8 | **0** |
-| Unmaintained (entries) | 8 | 2 (all upstream-pinned) |
+| Unmaintained (entries) | 8 | 3 (all upstream-pinned; one scoped ignore) |
 
-**There is no `ignore:` list anywhere.** The workflow that used to carry one now
-runs with no suppressions at all.
+**The only `ignore:` ID is `RUSTSEC-2024-0449`** (`unsafe-libyaml` via
+`lancedb → lindera`, issue #160). Everything else runs unsuppressed. Adding
+another ID still requires a reachability analysis and a review date here.
 
 Before this work the workflow had also been failing on `main` on **every
 scheduled run since at least 2026-05** (30+ consecutive failures) for a second,
@@ -105,6 +106,7 @@ the reason and what would have to change upstream.
 |---|---|---|---|
 | RUSTSEC-2024-0436 | paste 1.0.15 | `ragfs-embed → tokenizers` 0.22.2 and `candle-core → gemm`; `ragfs-store → lancedb → lance-bitpacking`. The locked optional `image` `avif` closure still records `rav1e`, which also depends on `paste`; that feature is off, so the build does not compile it. | `tokenizers` 0.23.2 still depends on `paste`, and so do `gemm` 0.19 and `lance-bitpacking` 13. Turning `avif` off does not clear the advisory. Issue #80. |
 | RUSTSEC-2026-0192 | ttf-parser 0.25.1 | `ragfs-extract → lopdf` 0.42, required by `pdf-extract` 0.12 (^0.42) | `lopdf` 0.45 puts `skrifa` behind `font_embedding` (off by default). Bumping our direct `lopdf` alone leaves the 0.42 copy. Issue #82. |
+| RUSTSEC-2024-0449 | unsafe-libyaml 0.2.11 | `ragfs-store → lancedb` 0.37.1 → `lance-index` (hardcoded `tokenizer-lindera`) → `lindera` 3.0.7 → `serde_yaml_ng` 0.10.0. Confirmed with `cargo tree -i unsafe-libyaml`. | **Not a workspace YAML crate.** Config is TOML; `.yaml` files are extracted as UTF-8 text. `lancedb` 0.40.0 still enables `tokenizer-lindera`. `lancedb` ≥0.38 does not compile with default features (pin stays 0.37.1; #155 candle-core zip patch is unrelated). `lindera` 6 dropped YAML but `lance-tokenizer` 10 pins 3.0.7. `serde_yml` is RUSTSEC-2025-0068 (unsound); `serde-saphyr` has no advisory but there is no YAML parse/serialize surface here to migrate. **Scoped ignore** in `deny.toml` (reason names `serde_yaml_ng` as the only parent), `.cargo/audit.toml`, and `rustsec/audit-check`. Review: **2026-12-31**. Issue #160. |
 
 The optional `pdf_oxide` extractor was retired (issue #58), which dropped
 `lzw` (RUSTSEC-2020-0144) and `ttf-parser` 0.24.1 (RUSTSEC-2026-0192).
@@ -115,12 +117,13 @@ by `pdf_oxide`.
 
 Policy lives in `SECURITY.md` (advisory ladder, `ignore:` ownership, cadence).
 
-§1.2 is **not** a suppression list — `ignore = []` stays empty. It is the
-justification log for unmaintained/yanked crates we still pull. Re-read it at
-every minor release, and no later than **2026-12-31**. Any new vulnerability
-or unjustified unsound ID is a merge blocker.
+§1.2 is the justification log for unmaintained/yanked crates we still pull.
+`ignore` is empty except the scoped `RUSTSEC-2024-0449` row (issue #160).
+Re-read it at every minor release, and no later than **2026-12-31**. Any new
+vulnerability or unjustified unsound ID is a merge blocker.
 
-Last §1.2 review: 2026-10-10 (`core2` left with `bitstream-io` 4.10, issue #77; two unmaintained rows remain: `paste` #80, `ttf-parser` #82).
+Last §1.2 review: 2026-10-19 (`unsafe-libyaml` #160 added as a scoped ignore;
+two other unmaintained rows remain: `paste` #80, `ttf-parser` #82).
 
 ---
 
@@ -153,7 +156,8 @@ recommended. Merge order: **#42 → #40 → #41 → #38 → #39**.
       `pre-release.yml`, `deny.toml`).
 - [x] Empty the `deny.toml` ignore list. `wildcards = "allow"` stays: workspace
       members use `version.workspace = true`, which cargo-deny treats as a
-      wildcard. Issue #45.
+      wildcard. Issue #45. The one later exception is the scoped
+      `RUSTSEC-2024-0449` ignore (issue #160).
 - [x] Unblock and land the merge order in §2, then re-run release PR #13. Issue #46.
 - [x] Triage the 18 Dependabot PRs as one grouped change. Issue #47.
 - [ ] Report the `lancedb` 0.38.0 build failure upstream (`job.rs` uses
@@ -195,10 +199,10 @@ recommended. Merge order: **#42 → #40 → #41 → #38 → #39**.
 - **`security.yml` no longer runs on `pull_request`.** PR-time advisory gating is
   already done by the `cargo-deny` job in `ci.yml`. Running the full audit on PRs
   as well would turn every PR red for lockfile advisories it did not introduce.
-- **No `ignore:` lists remain.** They were only ever a temporary measure while
-  §1.2-style constraints existed; the graph is now clean, so nothing is
-  suppressed in `security.yml`, `pre-release.yml` or (once #42 is revised)
-  `deny.toml`.
+- **`ignore:` is scoped to `RUSTSEC-2024-0449` only** (`unsafe-libyaml` via
+  `lancedb → lindera`, issue #160). That ID is listed in `deny.toml` (with
+  reason naming `serde_yaml_ng`), `.cargo/audit.toml`, `security.yml`, and
+  `pre-release.yml`. Do not add a second ID without a new §1.2 row.
 - **`RUSTFLAGS: -Dwarnings` is no longer global.** It used to sit in the
   workflow-level `env`, which made `check`, `test`, `msrv` and `doc` fail in
   lockstep on every new rustc warning. Warnings remain a hard error in the

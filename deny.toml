@@ -16,10 +16,28 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 unmaintained = "workspace"  # Only fail for direct workspace dependencies
 yanked = "warn"
 
-# No suppressions. The lancedb 0.37 migration dropped every advisory that used
-# to need an ignore. Re-adding an ID requires a reachability analysis and a
-# review date in docs/AUDIT.md.
-ignore = []
+# Adding another ID requires a reachability analysis and a review date in
+# docs/AUDIT.md. `unmaintained = "workspace"` means cargo-deny itself does
+# not fail on this transitive INFO advisory (hence advisory-not-detected);
+# the ignore is kept in lockstep with cargo-audit / rustsec/audit-check.
+# cargo-deny 0.20 ignore entries only accept `id`/`reason`; scope is the
+# reason (the only parent of `unsafe-libyaml` in Cargo.lock is `serde_yaml_ng`).
+ignore = [
+    # RUSTSEC-2024-0449 (INFO unmaintained). Reachability:
+    #   unsafe-libyaml 0.2.11 → serde_yaml_ng 0.10.0 → lindera 3.0.7
+    #     → lance-tokenizer 10.0.0 → lance / lance-index 10.0.0
+    #     → lancedb 0.37.1 → ragfs-store
+    # lancedb 0.37.1 hardcodes lance-index features `tokenizer-lindera` and
+    # `tokenizer-jieba` (still hardcoded in lancedb 0.40.0). ragfs uses
+    # FtsIndexBuilder::default() and never lindera YAML configs. Workspace
+    # config is TOML; `.yaml` files are extracted as UTF-8 text. No maintained
+    # upstream path: lancedb ≥0.38 fails to compile with default features
+    # (Dependabot ignores it) and lance-tokenizer 10 pins lindera 3.0.7
+    # (lindera 6 dropped YAML). serde_yml is RUSTSEC-2025-0068 (unsound);
+    # serde-saphyr has no advisory but we have no YAML API to migrate.
+    # Review: 2026-12-31. Issue #160.
+    { id = "RUSTSEC-2024-0449", reason = "transitive serde_yaml_ng 0.10.0 via lindera 3.0.7 / lancedb 0.37.1 tokenizer-lindera; no YAML API in this repo; serde_yml is RUSTSEC-2025-0068; see #160" },
+]
 
 [licenses]
 # Ensure licenses are compatible with our dual MIT/Apache-2.0 license

@@ -52,4 +52,178 @@ mod docs_drift {
             })
             .collect()
     }
+
+    /// Workspace crates talk TOML/JSON. YAML in the lockfile is only the
+    /// `lancedb → lindera → serde_yaml_ng → unsafe-libyaml` chain (issue #160).
+    #[test]
+    fn workspace_manifests_do_not_depend_on_yaml_parsers() {
+        const MANIFESTS: &[(&str, &str)] = &[
+            ("Cargo.toml", include_str!("../../../Cargo.toml")),
+            (
+                "crates/ragfs/Cargo.toml",
+                include_str!("../../../crates/ragfs/Cargo.toml"),
+            ),
+            (
+                "crates/ragfs-core/Cargo.toml",
+                include_str!("../../../crates/ragfs-core/Cargo.toml"),
+            ),
+            (
+                "crates/ragfs-fuse/Cargo.toml",
+                include_str!("../../../crates/ragfs-fuse/Cargo.toml"),
+            ),
+            (
+                "crates/ragfs-index/Cargo.toml",
+                include_str!("../../../crates/ragfs-index/Cargo.toml"),
+            ),
+            (
+                "crates/ragfs-chunker/Cargo.toml",
+                include_str!("../../../crates/ragfs-chunker/Cargo.toml"),
+            ),
+            (
+                "crates/ragfs-embed/Cargo.toml",
+                include_str!("../../../crates/ragfs-embed/Cargo.toml"),
+            ),
+            (
+                "crates/ragfs-extract/Cargo.toml",
+                include_str!("../../../crates/ragfs-extract/Cargo.toml"),
+            ),
+            (
+                "crates/ragfs-store/Cargo.toml",
+                include_str!("../../../crates/ragfs-store/Cargo.toml"),
+            ),
+            (
+                "crates/ragfs-query/Cargo.toml",
+                include_str!("../../../crates/ragfs-query/Cargo.toml"),
+            ),
+            (
+                "crates/ragfs-python/Cargo.toml",
+                include_str!("../../../crates/ragfs-python/Cargo.toml"),
+            ),
+        ];
+        let banned = [
+            "serde_yaml",
+            "serde_yaml_ng",
+            "serde_yml",
+            "unsafe-libyaml",
+            "serde-saphyr",
+            "noyalib",
+        ];
+        for (path, manifest) in MANIFESTS {
+            let deps = dependency_block(manifest);
+            for crate_name in banned {
+                assert!(
+                    !deps.contains(crate_name),
+                    "{path} must not depend on {crate_name} (issue #160)"
+                );
+            }
+        }
+    }
+
+    fn dependency_block(manifest: &str) -> String {
+        manifest
+            .split("\n[")
+            .filter(|section| {
+                let header = section.split(']').next().unwrap_or("");
+                header.contains("dependencies")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// `candle-core` 0.11.0 still requires zip ^8.6; keep the local patch
+    /// (issue #155) while ignoring RUSTSEC-2024-0449.
+    #[test]
+    fn candle_core_vendor_patch_is_present() {
+        let manifest = include_str!("../../../Cargo.toml");
+        assert!(
+            manifest.contains("vendor/candle-core"),
+            "do not drop the vendored candle-core patch (issue #155)"
+        );
+    }
+
+    /// RUSTSEC-2024-0449 is transitive-only. The ignore must stay scoped to
+    /// `serde_yaml_ng` and point at issue #160. `serde_yml` is RUSTSEC-2025-0068.
+    #[test]
+    fn rustsec_2024_0449_ignore_is_scoped_and_justified() {
+        let deny = include_str!("../../../deny.toml");
+        let security = include_str!("../../../.github/workflows/security.yml");
+        let pre_release = include_str!("../../../.github/workflows/pre-release.yml");
+        let audit_md = include_str!("../../../docs/AUDIT.md");
+        let advisory_id = "RUSTSEC-2024-0449";
+
+        let ignore = advisory_ignore_entries(deny);
+        assert_eq!(
+            ignore.len(),
+            1,
+            "deny.toml must ignore only {advisory_id}: {ignore:?}"
+        );
+        let entry = &ignore[0];
+        assert_eq!(
+            entry.id, advisory_id,
+            "ignore id must be {advisory_id}, not inferred from reason text"
+        );
+        assert!(
+            entry.reason.contains("#160"),
+            "ignore reason must link issue #160: {}",
+            entry.reason
+        );
+        assert!(
+            entry.reason.contains("serde_yaml_ng"),
+            "ignore must be scoped to serde_yaml_ng: {}",
+            entry.reason
+        );
+        assert!(
+            entry.reason.contains("RUSTSEC-2025-0068"),
+            "ignore reason must record why serde_yml is not the replacement: {}",
+            entry.reason
+        );
+
+        assert_eq!(
+            audit_check_ignore(security),
+            Some(advisory_id),
+            "security.yml must pass {advisory_id} to rustsec/audit-check"
+        );
+        assert_eq!(
+            audit_check_ignore(pre_release),
+            Some(advisory_id),
+            "pre-release.yml must pass {advisory_id} to rustsec/audit-check"
+        );
+        assert!(
+            audit_md.contains(advisory_id) && audit_md.contains("#160"),
+            "docs/AUDIT.md §1.2 must name {advisory_id} and issue #160"
+        );
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct DenyFile {
+        advisories: DenyAdvisories,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct DenyAdvisories {
+        ignore: Vec<DenyIgnore>,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct DenyIgnore {
+        id: String,
+        reason: String,
+    }
+
+    fn advisory_ignore_entries(deny: &str) -> Vec<DenyIgnore> {
+        toml::from_str::<DenyFile>(deny)
+            .expect("deny.toml must parse")
+            .advisories
+            .ignore
+    }
+
+    fn audit_check_ignore(workflow: &str) -> Option<&str> {
+        let action = workflow.split_once("- uses: rustsec/audit-check@v2")?.1;
+        let action = action
+            .split_once("\n      - ")
+            .map_or(action, |(block, _)| block);
+        action
+            .lines()
+            .find_map(|line| line.strip_prefix("          ignore:").map(str::trim))
+    }
 }
