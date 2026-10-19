@@ -156,30 +156,35 @@ mod docs_drift {
             "deny.toml must ignore only {advisory_id}: {ignore:?}"
         );
         let entry = &ignore[0];
-        assert!(
-            entry.contains(advisory_id),
-            "ignore entry must be {advisory_id}: {entry}"
+        assert_eq!(
+            entry.id, advisory_id,
+            "ignore id must be {advisory_id}, not inferred from reason text"
         );
         assert!(
-            entry.contains("#160"),
-            "ignore reason must link issue #160: {entry}"
+            entry.reason.contains("#160"),
+            "ignore reason must link issue #160: {}",
+            entry.reason
         );
         assert!(
-            entry.contains("serde_yaml_ng"),
-            "ignore must be scoped to serde_yaml_ng: {entry}"
+            entry.reason.contains("serde_yaml_ng"),
+            "ignore must be scoped to serde_yaml_ng: {}",
+            entry.reason
         );
         assert!(
-            entry.contains("RUSTSEC-2025-0068"),
-            "ignore reason must record why serde_yml is not the replacement: {entry}"
+            entry.reason.contains("RUSTSEC-2025-0068"),
+            "ignore reason must record why serde_yml is not the replacement: {}",
+            entry.reason
         );
 
-        assert!(
-            security.contains(advisory_id),
-            "security.yml must ignore {advisory_id} for rustsec/audit-check"
+        assert_eq!(
+            audit_check_ignore(security),
+            Some(advisory_id),
+            "security.yml must pass {advisory_id} to rustsec/audit-check"
         );
-        assert!(
-            pre_release.contains(advisory_id),
-            "pre-release.yml must ignore {advisory_id} for rustsec/audit-check"
+        assert_eq!(
+            audit_check_ignore(pre_release),
+            Some(advisory_id),
+            "pre-release.yml must pass {advisory_id} to rustsec/audit-check"
         );
         assert!(
             audit_md.contains(advisory_id) && audit_md.contains("#160"),
@@ -187,28 +192,36 @@ mod docs_drift {
         );
     }
 
-    fn advisory_ignore_entries(deny: &str) -> Vec<String> {
-        let adv = deny.find("[advisories]").expect("deny.toml [advisories]");
-        let rest = &deny[adv..];
-        let section_end = rest[1..].find("\n[").map_or(rest.len(), |i| i + 1);
-        let section = &rest[..section_end];
-        let start = section
-            .find("ignore =")
-            .expect("deny.toml [advisories] ignore");
-        let after_eq = section[start + "ignore =".len()..].trim_start();
-        let inner = after_eq
-            .strip_prefix('[')
-            .expect("deny.toml ignore must be an array")
-            .trim_start();
-        if inner.starts_with(']') {
-            return Vec::new();
-        }
-        let end = inner.find("\n]").expect("deny.toml ignore closing ]");
-        inner[..end]
+    #[derive(Debug, serde::Deserialize)]
+    struct DenyFile {
+        advisories: DenyAdvisories,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct DenyAdvisories {
+        ignore: Vec<DenyIgnore>,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct DenyIgnore {
+        id: String,
+        reason: String,
+    }
+
+    fn advisory_ignore_entries(deny: &str) -> Vec<DenyIgnore> {
+        toml::from_str::<DenyFile>(deny)
+            .expect("deny.toml must parse")
+            .advisories
+            .ignore
+    }
+
+    fn audit_check_ignore(workflow: &str) -> Option<&str> {
+        let action = workflow.split_once("- uses: rustsec/audit-check@v2")?.1;
+        let action = action
+            .split_once("\n      - ")
+            .map_or(action, |(block, _)| block);
+        action
             .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .map(ToOwned::to_owned)
-            .collect()
+            .find_map(|line| line.strip_prefix("          ignore:").map(str::trim))
     }
 }
