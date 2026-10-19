@@ -37,6 +37,8 @@ Add to your Claude Desktop config. Set `RAGFS_SOURCE_PATH` to the same directory
 
 Mutating tools are off unless `RAGFS_MCP_ALLOW_WRITES=1`. Jail roots are `RAGFS_SOURCE_PATH` plus optional `RAGFS_ALLOWED_ROOTS` (`os.pathsep`-separated), resolved with `realpath`. Hex index ids use that index's recorded source; they do not fall back to `RAGFS_SOURCE_PATH` or cwd.
 
+Input size caps, a per-call timeout, and a per-process rate limit are also env-overridable (`RAGFS_MCP_MAX_*`, `RAGFS_MCP_TIMEOUT_SECONDS`, `RAGFS_MCP_RATE_LIMIT`). See [MCP.md](../../docs/MCP.md).
+
 ```json
 {
   "mcpServers": {

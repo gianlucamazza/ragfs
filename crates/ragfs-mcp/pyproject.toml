@@ -28,6 +28,7 @@ dependencies = [
     "mcp>=1.2.0,<3",
     "ragfs>=0.2.0",
     "blake3>=1.0",
+    "pydantic>=2",
 ]
 
 [project.optional-dependencies]
