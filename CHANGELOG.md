@@ -7,10 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+<<<<<<< HEAD
+### Fixed
+- MCP batch operations construct the safety manager with the source tree as the jail and the index data dir for trash/history, so deletes can be undone. If soft-delete fails, the operation fails instead of permanently removing the file.
+=======
 ### Added
 - Accepted ADR-009: transparent memory benchmark harness for ragfs and
   emotional-memory (protocol, pinned public datasets, versioned facts,
   strict/lenient metrics). Design only; implementation follows in phased PRs.
+>>>>>>> origin/main
 
 ## [0.2.1] - 2026-10-10
 

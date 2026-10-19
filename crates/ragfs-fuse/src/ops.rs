@@ -704,12 +704,21 @@ impl OpsManager {
                     return result;
                 }
                 Err(e) => {
-                    warn!("Soft delete failed, falling back to hard delete: {e}");
+                    let error_msg = format!("Soft delete failed: {e}");
+                    warn!("{error_msg}");
+                    self.log_failure_to_history(
+                        HistoryOperation::Delete {
+                            path: resolved,
+                            trash_id: None,
+                        },
+                        &error_msg,
+                    );
+                    return self.fail_and_store("delete", path.clone(), error_msg).await;
                 }
             }
         }
 
-        // Hard delete (fallback or no safety manager)
+        // Hard delete only when no safety manager is configured.
         match fs::remove_file(&resolved) {
             Ok(()) => {
                 info!("Hard deleted file: {:?}", resolved);
@@ -2073,6 +2082,40 @@ mod tests {
         assert!(source_dir.path().join("to_soft_delete.txt").exists());
         let content = fs::read_to_string(source_dir.path().join("to_soft_delete.txt")).unwrap();
         assert_eq!(content, "keep me");
+    }
+
+    #[tokio::test]
+    async fn test_delete_does_not_remove_file_when_soft_delete_fails() {
+        let source_dir = TempDir::new().unwrap();
+        let jail_dir = TempDir::new().unwrap();
+        let data_dir = TempDir::new().unwrap();
+        let safety = Arc::new(SafetyManager::new(
+            &jail_dir.path().to_path_buf(),
+            Some(crate::safety::SafetyConfig {
+                data_dir: data_dir.path().to_path_buf(),
+                trash_retention_days: 7,
+                soft_delete: true,
+            }),
+        ));
+        let manager = OpsManager::with_safety(source_dir.path().to_path_buf(), None, None, safety);
+
+        let relative = PathBuf::from("keep_me.txt");
+        let file = source_dir.path().join("keep_me.txt");
+        fs::write(&file, "must survive").unwrap();
+
+        let result = manager.delete(&relative).await;
+
+        assert!(!result.success, "{:?}", result.error);
+        assert!(
+            result.error.as_ref().unwrap().contains("escapes"),
+            "{:?}",
+            result.error
+        );
+        assert!(
+            file.exists(),
+            "soft-delete failure must not remove the file"
+        );
+        assert_eq!(fs::read_to_string(&file).unwrap(), "must survive");
     }
 
     #[tokio::test]
