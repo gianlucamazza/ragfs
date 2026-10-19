@@ -31,6 +31,7 @@
 //!
 //! # Get JSON output
 //! ragfs query ~/Documents "auth" --format json
+//! ragfs query ~/Documents "auth" --save-receipt
 //! ```
 //!
 //! See the [User Guide](../docs/USER_GUIDE.md) for detailed usage.
@@ -57,6 +58,10 @@ use tracing::{Level, info};
 use tracing_subscriber::FmtSubscriber;
 
 use ragfs::config::{Config, data_dir};
+use ragfs::receipt::{
+    QueryOutput, QueryReceipt, ResultItem, index_dir_from_db_path, resolve_receipt_path,
+    save_receipt,
+};
 
 #[cfg(unix)]
 mod daemon;
@@ -145,6 +150,17 @@ enum Commands {
         /// index-root-relative `dir_path` values (see `USER_GUIDE`).
         #[arg(long)]
         scope: Option<String>,
+
+        /// Save a local retrieval receipt (no network). Omit PATH to write under
+        /// `<index-dir>/receipts/` (see `USER_GUIDE`).
+        #[arg(
+            long,
+            value_name = "PATH",
+            num_args = 0..=1,
+            default_missing_value = "__default__",
+            hide_default_value = true
+        )]
+        save_receipt: Option<PathBuf>,
     },
 
     /// Show index status
@@ -170,22 +186,6 @@ enum ConfigAction {
     Path,
 }
 
-/// Output structure for query results.
-#[derive(Serialize)]
-struct QueryOutput {
-    query: String,
-    results: Vec<ResultItem>,
-}
-
-#[derive(Serialize)]
-struct ResultItem {
-    file: String,
-    score: f32,
-    content: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    lines: Option<String>,
-}
-
 /// Output structure for status.
 #[derive(Serialize)]
 struct StatusOutput {
@@ -195,6 +195,7 @@ struct StatusOutput {
     index_size_bytes: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     last_updated: Option<String>,
+    index_revision: u64,
 }
 
 /// Get the database path for a given source directory.
@@ -653,6 +654,7 @@ async fn run(cli: Cli) -> Result<()> {
             limit,
             hybrid,
             scope,
+            save_receipt: save_receipt_opt,
         } => {
             if !path.exists() {
                 anyhow::bail!("Directory does not exist: {}", path.display());
@@ -675,6 +677,8 @@ async fn run(cli: Cli) -> Result<()> {
 
             // Initialize store
             store.init().await.context("Failed to initialize store")?;
+            let index_revision = store.index_revision().await?;
+            let embedding_model = embedder.model_name().to_string();
 
             let limit = config.query_limit(limit);
             let use_hybrid = config.query_hybrid(hybrid);
@@ -695,28 +699,52 @@ async fn run(cli: Cli) -> Result<()> {
                 .await
                 .context("Query execution failed")?;
 
+            let mut output = QueryOutput {
+                query: query.clone(),
+                results: results
+                    .iter()
+                    .map(|r| ResultItem {
+                        file: r.file_path.to_string_lossy().to_string(),
+                        score: r.score,
+                        content: truncate(&r.content, 200),
+                        lines: r
+                            .line_range
+                            .as_ref()
+                            .map(|l| format!("{}:{}", l.start, l.end)),
+                    })
+                    .collect(),
+                index_revision,
+                ragfs_version: env!("CARGO_PKG_VERSION").to_string(),
+                embedding_model,
+                receipt_path: None,
+            };
+
+            if let Some(requested) = save_receipt_opt {
+                let requested = (!requested.as_os_str().is_empty()
+                    && requested.as_os_str() != "__default__")
+                    .then_some(requested);
+                let timestamp = chrono::Utc::now();
+                let receipt_path = resolve_receipt_path(
+                    requested.as_deref(),
+                    &index_dir_from_db_path(&db_path),
+                    &query,
+                    timestamp,
+                );
+                let receipt = QueryReceipt::from_output(&output, timestamp);
+                save_receipt(&receipt_path, &receipt).with_context(|| {
+                    format!("Failed to save receipt {}", receipt_path.display())
+                })?;
+                output.receipt_path = Some(receipt_path.display().to_string());
+            }
+
             // Output results
             match cli.format {
                 OutputFormat::Json => {
-                    let output = QueryOutput {
-                        query: query.clone(),
-                        results: results
-                            .iter()
-                            .map(|r| ResultItem {
-                                file: r.file_path.to_string_lossy().to_string(),
-                                score: r.score,
-                                content: truncate(&r.content, 200),
-                                lines: r
-                                    .line_range
-                                    .as_ref()
-                                    .map(|l| format!("{}:{}", l.start, l.end)),
-                            })
-                            .collect(),
-                    };
                     println!("{}", serde_json::to_string_pretty(&output)?);
                 }
                 OutputFormat::Text => {
-                    println!("Query: {query}\n");
+                    println!("Query: {query}");
+                    println!("Index revision: {index_revision}\n");
                     if results.is_empty() {
                         println!("No results found.");
                     } else {
@@ -733,6 +761,9 @@ async fn run(cli: Cli) -> Result<()> {
                             println!("   {}", truncate(&result.content, 100));
                             println!();
                         }
+                    }
+                    if let Some(ref receipt_path) = output.receipt_path {
+                        println!("Receipt saved to {receipt_path}");
                     }
                 }
             }
@@ -773,6 +804,7 @@ async fn run(cli: Cli) -> Result<()> {
             store.init().await.context("Failed to initialize store")?;
 
             let stats = store.stats().await?;
+            let index_revision = store.index_revision().await?;
 
             match cli.format {
                 OutputFormat::Json => {
@@ -782,6 +814,7 @@ async fn run(cli: Cli) -> Result<()> {
                         total_chunks: stats.total_chunks,
                         index_size_bytes: stats.index_size_bytes,
                         last_updated: stats.last_updated.map(|t| t.to_rfc3339()),
+                        index_revision,
                     };
                     println!("{}", serde_json::to_string_pretty(&output)?);
                 }
@@ -789,6 +822,7 @@ async fn run(cli: Cli) -> Result<()> {
                     println!("Index Status for {}", path.display());
                     println!("  Files:  {}", stats.total_files);
                     println!("  Chunks: {}", stats.total_chunks);
+                    println!("  Revision: {index_revision}");
                     if let Some(last) = stats.last_updated {
                         println!("  Updated: {}", last.format("%Y-%m-%d %H:%M:%S"));
                     }

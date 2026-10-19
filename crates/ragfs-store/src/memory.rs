@@ -46,6 +46,7 @@ pub struct MemoryStore {
     chunks: Arc<RwLock<HashMap<Uuid, Chunk>>>,
     files: Arc<RwLock<HashMap<PathBuf, FileRecord>>>,
     initialized: Arc<RwLock<bool>>,
+    index_revision: Arc<RwLock<u64>>,
 }
 
 impl MemoryStore {
@@ -57,6 +58,7 @@ impl MemoryStore {
             chunks: Arc::new(RwLock::new(HashMap::new())),
             files: Arc::new(RwLock::new(HashMap::new())),
             initialized: Arc::new(RwLock::new(false)),
+            index_revision: Arc::new(RwLock::new(1)),
         }
     }
 
@@ -76,6 +78,11 @@ impl MemoryStore {
 
         dot / (norm_a * norm_b)
     }
+
+    async fn bump_index_revision(&self) {
+        let mut revision = self.index_revision.write().await;
+        *revision = revision.saturating_add(1);
+    }
 }
 
 impl Default for MemoryStore {
@@ -94,10 +101,15 @@ impl VectorStore for MemoryStore {
     }
 
     async fn upsert_chunks(&self, chunks: &[Chunk]) -> Result<(), StoreError> {
+        if chunks.is_empty() {
+            return Ok(());
+        }
         let mut store = self.chunks.write().await;
         for chunk in chunks {
             store.insert(chunk.id, chunk.clone());
         }
+        drop(store);
+        self.bump_index_revision().await;
         debug!("Upserted {} chunks", chunks.len());
         Ok(())
     }
@@ -155,6 +167,9 @@ impl VectorStore for MemoryStore {
         let deleted = (before - chunks.len()) as u64;
 
         files.remove(path);
+        drop(chunks);
+        drop(files);
+        self.bump_index_revision().await;
 
         debug!("Deleted {} chunks for {:?}", deleted, path);
         Ok(deleted)
@@ -182,6 +197,12 @@ impl VectorStore for MemoryStore {
         if let Some(mut record) = files.remove(from) {
             record.path = to.to_path_buf();
             files.insert(to.to_path_buf(), record);
+        }
+
+        drop(chunks);
+        drop(files);
+        if updated > 0 {
+            self.bump_index_revision().await;
         }
 
         debug!("Updated {} chunks from {:?} to {:?}", updated, from, to);
@@ -219,6 +240,7 @@ impl VectorStore for MemoryStore {
             total_files: files.len() as u64,
             index_size_bytes: 0, // In-memory, no disk usage
             last_updated: Some(Utc::now()),
+            index_revision: *self.index_revision.read().await,
         })
     }
 
@@ -516,6 +538,61 @@ mod tests {
             .unwrap();
         assert_eq!(docs.len(), 1);
         assert!(docs[0].file_path.ends_with("docs/readme.md"));
+    }
+
+    #[tokio::test]
+    async fn index_revision_changes_on_writes_not_reads() {
+        let store = MemoryStore::new(3);
+        store.init().await.unwrap();
+        let initial = store.stats().await.unwrap().index_revision;
+        assert_eq!(initial, 1);
+
+        let after_read = store.stats().await.unwrap().index_revision;
+        assert_eq!(after_read, initial);
+
+        let query = SearchQuery {
+            embedding: vec![1.0, 0.0, 0.0],
+            text: None,
+            limit: 1,
+            filters: vec![],
+            metric: Default::default(),
+            scope_prefix: None,
+        };
+        store.search(query.clone()).await.unwrap();
+        store.hybrid_search(query).await.unwrap();
+        store.get_all_chunks().await.unwrap();
+        assert_eq!(store.stats().await.unwrap().index_revision, initial);
+
+        let chunk = create_test_chunk(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            "/test/file.txt",
+            vec![1.0, 0.0, 0.0],
+        );
+        store.upsert_chunks(&[chunk]).await.unwrap();
+        let after_add = store.stats().await.unwrap().index_revision;
+        assert!(after_add > initial, "add must bump revision");
+
+        store.upsert_chunks(&[]).await.unwrap();
+        assert_eq!(
+            store.stats().await.unwrap().index_revision,
+            after_add,
+            "empty upsert is not an index write"
+        );
+
+        store
+            .update_file_path(Path::new("/test/file.txt"), Path::new("/test/renamed.txt"))
+            .await
+            .unwrap();
+        let after_update = store.stats().await.unwrap().index_revision;
+        assert!(after_update > after_add, "rename must bump revision");
+
+        store
+            .delete_by_file_path(Path::new("/test/renamed.txt"))
+            .await
+            .unwrap();
+        let after_delete = store.stats().await.unwrap().index_revision;
+        assert!(after_delete > after_update, "delete must bump revision");
     }
 
     #[test]

@@ -23,7 +23,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::schema::{
-    CHUNKS_SCHEMA_VERSION, SCHEMA_SIDECAR_FILENAME, SchemaSidecar, missing_scope_columns,
+    CHUNKS_SCHEMA_VERSION, SCHEMA_SIDECAR_FILENAME, SchemaSidecar, effective_index_revision,
+    missing_scope_columns,
 };
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -351,14 +352,28 @@ impl LanceStore {
             .join(SCHEMA_SIDECAR_FILENAME)
     }
 
-    async fn read_schema_sidecar(&self) -> Option<u32> {
+    async fn read_schema_sidecar(&self) -> Option<SchemaSidecar> {
         let bytes = tokio::fs::read(self.schema_sidecar_path()).await.ok()?;
-        serde_json::from_slice::<SchemaSidecar>(&bytes)
-            .ok()
-            .map(|s| s.chunks_schema_version)
+        serde_json::from_slice::<SchemaSidecar>(&bytes).ok()
     }
 
-    async fn write_schema_sidecar(&self, version: u32) -> Result<(), StoreError> {
+    fn sidecar_with_revision(
+        &self,
+        mut sidecar: SchemaSidecar,
+        index_revision: u64,
+    ) -> SchemaSidecar {
+        sidecar.chunks_schema_version = sidecar.chunks_schema_version.max(CHUNKS_SCHEMA_VERSION);
+        if sidecar.embedding_dim.is_none() {
+            sidecar.embedding_dim = Some(self.embedding_dim);
+        }
+        if sidecar.embedding_model.is_none() {
+            sidecar.embedding_model.clone_from(&self.embedding_model);
+        }
+        sidecar.index_revision = index_revision;
+        sidecar
+    }
+
+    async fn write_schema_sidecar(&self, sidecar: &SchemaSidecar) -> Result<(), StoreError> {
         let path = self.schema_sidecar_path();
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await.map_err(|e| {
@@ -368,12 +383,8 @@ impl LanceStore {
                 ))
             })?;
         }
-        let json = serde_json::to_string_pretty(&SchemaSidecar {
-            chunks_schema_version: version,
-            embedding_dim: Some(self.embedding_dim),
-            embedding_model: self.embedding_model.clone(),
-        })
-        .map_err(|e| StoreError::Schema(format!("Failed to serialize schema sidecar: {e}")))?;
+        let json = serde_json::to_string_pretty(sidecar)
+            .map_err(|e| StoreError::Schema(format!("Failed to serialize schema sidecar: {e}")))?;
         tokio::fs::write(&path, json).await.map_err(|e| {
             StoreError::Schema(format!(
                 "Failed to write schema sidecar {}: {e}",
@@ -381,6 +392,88 @@ impl LanceStore {
             ))
         })?;
         Ok(())
+    }
+
+    /// Persist `index_revision = 1` on old sidecars without rewriting Lance tables.
+    async fn ensure_index_revision(&self) -> Result<u64, StoreError> {
+        let existing = self.read_schema_sidecar().await;
+        if let Some(s) = &existing
+            && s.index_revision > 0
+        {
+            return Ok(s.index_revision);
+        }
+        let revision = effective_index_revision(existing.as_ref().map_or(0, |s| s.index_revision));
+        let sidecar = self.sidecar_with_revision(existing.unwrap_or_default(), revision);
+        self.write_schema_sidecar(&sidecar).await?;
+        Ok(revision)
+    }
+
+    async fn current_index_revision(&self) -> u64 {
+        effective_index_revision(
+            self.read_schema_sidecar()
+                .await
+                .map_or(0, |s| s.index_revision),
+        )
+    }
+
+    async fn bump_index_revision(&self) -> Result<u64, StoreError> {
+        let existing = self.read_schema_sidecar().await;
+        let next = effective_index_revision(existing.as_ref().map_or(0, |s| s.index_revision))
+            .saturating_add(1);
+        let sidecar = self.sidecar_with_revision(existing.unwrap_or_default(), next);
+        self.write_schema_sidecar(&sidecar).await?;
+        Ok(next)
+    }
+
+    /// Cheap revision read used by `ragfs query` / `ragfs status` (avoids a table scan).
+    pub async fn index_revision(&self) -> Result<u64, StoreError> {
+        Ok(self.current_index_revision().await)
+    }
+
+    async fn upsert_chunks_inner(&self, chunks: &[Chunk]) -> Result<(), StoreError> {
+        if chunks.is_empty() {
+            return Ok(());
+        }
+
+        debug!("Upserting {} chunks", chunks.len());
+
+        let table = self.get_chunks_table().await?;
+        let batch = self.chunks_to_batch(chunks)?;
+        let schema = batch.schema();
+
+        let batches = RecordBatchIterator::new(vec![Ok(batch)], schema);
+
+        table
+            .add(Box::new(batches) as Box<dyn RecordBatchReader + Send>)
+            .execute()
+            .await
+            .map_err(|e| StoreError::Insert(format!("Failed to insert chunks: {e}")))?;
+
+        debug!("Successfully upserted {} chunks", chunks.len());
+        if let Err(e) = self.ensure_vector_index().await {
+            warn!("ANN index check after upsert failed: {e}");
+        }
+        Ok(())
+    }
+
+    async fn delete_by_file_path_inner(&self, path: &Path) -> Result<u64, StoreError> {
+        let path_str = path.to_string_lossy().to_string();
+        debug!("Deleting chunks for file: {}", path_str);
+
+        let table = self.get_chunks_table().await?;
+
+        table
+            .delete(&format!("file_path = '{}'", path_str.replace('\'', "''")))
+            .await
+            .map_err(|e| StoreError::Delete(format!("Failed to delete chunks: {e}")))?;
+
+        let files_table = self.get_files_table().await?;
+        files_table
+            .delete(&format!("path = '{}'", path_str.replace('\'', "''")))
+            .await
+            .map_err(|e| StoreError::Delete(format!("Failed to delete file record: {e}")))?;
+
+        Ok(1) // LanceDB doesn't return count, we assume success
     }
 
     fn schema_migration_failed_message(db_path: &Path, error: &impl std::fmt::Display) -> String {
@@ -414,7 +507,10 @@ impl LanceStore {
             .map_err(|e| StoreError::Schema(format!("Failed to read chunks schema: {e}")))?;
         self.ensure_embedding_dim_matches(&schema)?;
         let missing = missing_scope_columns(&schema);
-        let sidecar_version = self.read_schema_sidecar().await.unwrap_or(0);
+        let sidecar_version = self
+            .read_schema_sidecar()
+            .await
+            .map_or(0, |s| s.chunks_schema_version);
 
         if missing.is_empty() && sidecar_version >= CHUNKS_SCHEMA_VERSION {
             return Ok(());
@@ -439,7 +535,7 @@ impl LanceStore {
         }
 
         self.backfill_scope_columns().await?;
-        self.write_schema_sidecar(CHUNKS_SCHEMA_VERSION).await?;
+        self.ensure_index_revision().await?;
         info!("Chunks table schema is v{CHUNKS_SCHEMA_VERSION}");
         Ok(())
     }
@@ -755,7 +851,7 @@ impl VectorStore for LanceStore {
                 warn!("Failed to create FTS index (may already exist): {e}");
             }
 
-            self.write_schema_sidecar(CHUNKS_SCHEMA_VERSION).await?;
+            self.ensure_index_revision().await?;
         }
 
         // Create files table if not exists
@@ -773,32 +869,16 @@ impl VectorStore for LanceStore {
             warn!("ANN index check on init failed: {e}");
         }
 
+        self.ensure_index_revision().await?;
+
         info!("LanceDB initialized successfully");
         Ok(())
     }
 
     async fn upsert_chunks(&self, chunks: &[Chunk]) -> Result<(), StoreError> {
-        if chunks.is_empty() {
-            return Ok(());
-        }
-
-        debug!("Upserting {} chunks", chunks.len());
-
-        let table = self.get_chunks_table().await?;
-        let batch = self.chunks_to_batch(chunks)?;
-        let schema = batch.schema();
-
-        let batches = RecordBatchIterator::new(vec![Ok(batch)], schema);
-
-        table
-            .add(Box::new(batches) as Box<dyn RecordBatchReader + Send>)
-            .execute()
-            .await
-            .map_err(|e| StoreError::Insert(format!("Failed to insert chunks: {e}")))?;
-
-        debug!("Successfully upserted {} chunks", chunks.len());
-        if let Err(e) = self.ensure_vector_index().await {
-            warn!("ANN index check after upsert failed: {e}");
+        self.upsert_chunks_inner(chunks).await?;
+        if !chunks.is_empty() {
+            self.bump_index_revision().await?;
         }
         Ok(())
     }
@@ -912,24 +992,9 @@ impl VectorStore for LanceStore {
     }
 
     async fn delete_by_file_path(&self, path: &Path) -> Result<u64, StoreError> {
-        let path_str = path.to_string_lossy().to_string();
-        debug!("Deleting chunks for file: {}", path_str);
-
-        let table = self.get_chunks_table().await?;
-
-        table
-            .delete(&format!("file_path = '{}'", path_str.replace('\'', "''")))
-            .await
-            .map_err(|e| StoreError::Delete(format!("Failed to delete chunks: {e}")))?;
-
-        // Also delete from files table
-        let files_table = self.get_files_table().await?;
-        files_table
-            .delete(&format!("path = '{}'", path_str.replace('\'', "''")))
-            .await
-            .map_err(|e| StoreError::Delete(format!("Failed to delete file record: {e}")))?;
-
-        Ok(1) // LanceDB doesn't return count, we assume success
+        let deleted = self.delete_by_file_path_inner(path).await?;
+        self.bump_index_revision().await?;
+        Ok(deleted)
     }
 
     async fn update_file_path(&self, from: &Path, to: &Path) -> Result<u64, StoreError> {
@@ -956,10 +1021,10 @@ impl VectorStore for LanceStore {
         }
 
         // 3. Delete old chunks
-        self.delete_by_file_path(from).await?;
+        self.delete_by_file_path_inner(from).await?;
 
         // 4. Insert updated chunks
-        self.upsert_chunks(&chunks).await?;
+        self.upsert_chunks_inner(&chunks).await?;
 
         // 5. Also update file record if exists
         if let Ok(Some(mut file_record)) = self.get_file(from).await {
@@ -967,6 +1032,7 @@ impl VectorStore for LanceStore {
             self.upsert_file(&file_record).await?;
         }
 
+        self.bump_index_revision().await?;
         info!("Updated {} chunks from {:?} to {:?}", chunk_count, from, to);
         Ok(chunk_count)
     }
@@ -1095,6 +1161,7 @@ impl VectorStore for LanceStore {
             total_files: file_count,
             index_size_bytes,
             last_updated: Some(Utc::now()),
+            index_revision: self.current_index_revision().await,
         })
     }
 
@@ -3089,5 +3156,90 @@ mod tests {
             sidecar.embedding_model.as_deref(),
             Some("thenlper/gte-small")
         );
+        assert_eq!(sidecar.index_revision, 1);
+        assert_eq!(sidecar.chunks_schema_version, 2);
+    }
+
+    #[tokio::test]
+    async fn index_revision_changes_on_writes_not_reads() {
+        let temp = tempdir().unwrap();
+        let db_path = temp.path().join("test.lance");
+        let store = LanceStore::new(db_path, TEST_DIM);
+        store.init().await.unwrap();
+
+        let initial = store.index_revision().await.unwrap();
+        assert_eq!(initial, 1);
+
+        let embedding = create_random_embedding(TEST_DIM);
+        store
+            .search(SearchQuery {
+                embedding: embedding.clone(),
+                text: None,
+                limit: 1,
+                filters: vec![],
+                metric: DistanceMetric::Cosine,
+                scope_prefix: None,
+            })
+            .await
+            .unwrap();
+        store.stats().await.unwrap();
+        store.init().await.unwrap();
+        assert_eq!(store.index_revision().await.unwrap(), initial);
+
+        let path = Path::new("/tmp/rev.txt");
+        store
+            .upsert_chunks(&[create_test_chunk(path, "hello", embedding.clone(), 0)])
+            .await
+            .unwrap();
+        let after_add = store.index_revision().await.unwrap();
+        assert!(after_add > initial);
+
+        store.upsert_chunks(&[]).await.unwrap();
+        assert_eq!(store.index_revision().await.unwrap(), after_add);
+
+        store
+            .update_file_path(path, Path::new("/tmp/rev-renamed.txt"))
+            .await
+            .unwrap();
+        let after_update = store.index_revision().await.unwrap();
+        assert!(after_update > after_add);
+
+        store
+            .delete_by_file_path(Path::new("/tmp/rev-renamed.txt"))
+            .await
+            .unwrap();
+        assert!(store.index_revision().await.unwrap() > after_update);
+    }
+
+    #[tokio::test]
+    async fn old_sidecar_without_revision_is_initialized_without_reindex() {
+        let temp = tempdir().unwrap();
+        let db_path = temp.path().join("test.lance");
+        let store = LanceStore::new(db_path, TEST_DIM);
+        store.init().await.unwrap();
+        let path = Path::new("/tmp/old.txt");
+        let embedding = create_random_embedding(TEST_DIM);
+        store
+            .upsert_chunks(&[create_test_chunk(path, "existing", embedding, 0)])
+            .await
+            .unwrap();
+        let chunks_before = store.get_chunks_for_file(path).await.unwrap();
+        assert_eq!(chunks_before.len(), 1);
+
+        let sidecar_path = temp.path().join(SCHEMA_SIDECAR_FILENAME);
+        std::fs::write(&sidecar_path, r#"{"chunks_schema_version":2}"#).unwrap();
+
+        store.init().await.unwrap();
+        let sidecar: SchemaSidecar =
+            serde_json::from_slice(&std::fs::read(&sidecar_path).unwrap()).unwrap();
+        assert_eq!(sidecar.chunks_schema_version, CHUNKS_SCHEMA_VERSION);
+        assert_eq!(sidecar.index_revision, 1);
+
+        let chunks_after = store.get_chunks_for_file(path).await.unwrap();
+        assert_eq!(chunks_after.len(), 1);
+        assert_eq!(chunks_after[0].content, "existing");
+        assert_eq!(store.index_revision().await.unwrap(), 1);
+        store.stats().await.unwrap();
+        assert_eq!(store.index_revision().await.unwrap(), 1);
     }
 }

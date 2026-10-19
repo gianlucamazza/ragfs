@@ -206,7 +206,7 @@ Implements `VectorStore` trait. Features:
 - Directory scope via `SearchQuery.scope_prefix` (`only_if` pre-filter; IVF-PQ unchanged)
 - Full-text search (FTS) index for hybrid search
 - FTS created on init; ANN created best-effort after ingest
-- **Schema v2** (`dir_path`, `dir_depth`, `path_components`): `init()` migrates existing Lance tables in place and writes `ragfs-schema.json` (`chunks_schema_version = 2`) beside the database. `ragfs index --force` rewrites index-root-relative scope fields; it does **not** add Lance columns. If migration fails, the index is left intact — remove `~/.local/share/ragfs/indices/<hash>/` (the `index.lance` directory plus sidecar) and rebuild with `ragfs index <dir> --force`. See [USER_GUIDE](USER_GUIDE.md#scoped-search-and-existing-indexes).
+- **Schema v2** (`dir_path`, `dir_depth`, `path_components`): `init()` migrates existing Lance tables in place and writes `ragfs-schema.json` (`chunks_schema_version = 2`, plus additive `index_revision`) beside the database. Missing `index_revision` is initialized to `1` without a Lance rewrite or schema bump. `ragfs index --force` rewrites index-root-relative scope fields; it does **not** add Lance columns. If migration fails, the index is left intact — remove `~/.local/share/ragfs/indices/<hash>/` (the `index.lance` directory plus sidecar) and rebuild with `ragfs index <dir> --force`. See [USER_GUIDE](USER_GUIDE.md#scoped-search-and-existing-indexes).
 
 ### Usage Example
 

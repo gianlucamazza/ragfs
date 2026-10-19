@@ -1109,6 +1109,7 @@ mod tests {
                 total_files: files.len() as u64,
                 index_size_bytes: 0,
                 last_updated: None,
+                index_revision: 0,
             })
         }
 

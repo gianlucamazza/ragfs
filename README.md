@@ -40,6 +40,8 @@ Archives: `ragfs-linux-x86_64.tar.gz` and `ragfs-linux-aarch64.tar.gz`, each wit
 ```bash
 ragfs index ~/Documents
 ragfs query ~/Documents "authentication logic"
+ragfs query ~/Documents "authentication logic" --format json   # includes index_revision
+ragfs query ~/Documents "authentication logic" --save-receipt  # local receipt under the index dir
 ragfs status ~/Documents
 
 mkdir ~/ragfs-mount

@@ -162,6 +162,7 @@ ragfs query <PATH> <QUERY> [OPTIONS]
 | `--limit` | `-l` | `[query].default_limit` (10) | Maximum number of results (clamped by `[query].max_limit`) |
 | `--hybrid` | | config `[query].hybrid` (true) | Force hybrid search (vector + full-text) |
 | `--scope` | | (entire index) | Restrict results to this directory (relative to the index root) and its subdirectories. See [Scoped search and existing indexes](#scoped-search-and-existing-indexes). |
+| `--save-receipt [PATH]` | | off | Opt-in local retrieval receipt (no network). Omit `PATH` to write under `<index-dir>/receipts/`. See [Query receipts](#query-receipts). |
 
 **Examples:**
 
@@ -177,6 +178,9 @@ ragfs query ./src "configuration" -f json
 
 # Only search under src/auth/ (and nested dirs such as src/auth/oauth/)
 ragfs query . "login flow" --scope src/auth
+
+# Save a local receipt next to the index (opt-in; never uploaded)
+ragfs query ./src "configuration" --save-receipt
 ```
 
 #### Scoped search and existing indexes
@@ -233,9 +237,41 @@ Query: error handling implementation
       "content": "Handle errors gracefully by...",
       "lines": "45:52"
     }
-  ]
+  ],
+  "index_revision": 3,
+  "ragfs_version": "0.2.1",
+  "embedding_model": "thenlper/gte-small"
 }
 ```
+
+Existing `query` / `results` fields are unchanged. `index_revision`,
+`ragfs_version`, and `embedding_model` are additive. When `--save-receipt` is
+used, JSON also includes `receipt_path`.
+
+`ragfs status --format json` includes the same `index_revision`. Two queries
+against an unchanged index share the revision; any index write (add, update,
+delete, reindex) increments it. Indexes created before this field existed keep
+working: the sidecar is initialized to `1` on open without a reindex, and
+`chunks_schema_version` stays at `2`.
+
+#### Query receipts
+
+`--save-receipt` writes a JSON file on the local machine only. Nothing is
+uploaded.
+
+**Default location** (omit `PATH`):
+
+```
+~/.local/share/ragfs/indices/<hash>/receipts/<UTC>-<query-hash>.json
+```
+
+Override with `--save-receipt /path/to/file.json`, or pass an existing
+directory to write the default filename inside it. Receipts live in the index
+directory, so deleting the index directory removes them. There is no list/show
+subcommand; open the JSON file directly.
+
+Each receipt records the query, UTC timestamp, `index_revision`, ragfs version,
+embedding model, and the returned hits (`file`, `score`, `content`, `lines`).
 
 ### ragfs mount
 
@@ -302,7 +338,8 @@ ragfs status ./src -f json
   "total_files": 42,
   "total_chunks": 583,
   "index_size_bytes": 12582912,
-  "last_updated": "2025-01-11T14:32:15Z"
+  "last_updated": "2025-01-11T14:32:15Z",
+  "index_revision": 3
 }
 ```
 
@@ -439,9 +476,10 @@ ragfs query ./src "auth" -f json | jq '.results[0].score'
 ```
 ~/.local/share/ragfs/indices/{hash}/index.lance
 ~/.local/share/ragfs/indices/{hash}/ragfs-schema.json
+~/.local/share/ragfs/indices/{hash}/receipts/   # opt-in query receipts
 ```
 
-Each indexed directory gets a unique index based on its path hash (blake3). `ragfs-schema.json` records `chunks_schema_version` (currently `2`, with directory-scope columns). Existing indexes are migrated on open; see [Scoped search and existing indexes](#scoped-search-and-existing-indexes).
+Each indexed directory gets a unique index based on its path hash (blake3). `ragfs-schema.json` records `chunks_schema_version` (currently `2`, with directory-scope columns) and `index_revision` (a monotonic counter that changes on index writes). Existing indexes are migrated on open; a missing `index_revision` is initialized to `1` without a reindex. See [Scoped search and existing indexes](#scoped-search-and-existing-indexes) and [Query receipts](#query-receipts).
 
 ### Embedding Model Cache
 

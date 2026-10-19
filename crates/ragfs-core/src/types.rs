@@ -540,6 +540,11 @@ pub struct StoreStats {
     pub index_size_bytes: u64,
     /// Last update time
     pub last_updated: Option<DateTime<Utc>>,
+    /// Monotonic index revision. Changes on add/update/delete/reindex, not on reads.
+    ///
+    /// `0` only appears on backends that have not assigned a revision yet.
+    #[serde(default)]
+    pub index_revision: u64,
 }
 
 // ============================================================================
@@ -836,6 +841,7 @@ mod tests {
             total_files: 10,
             index_size_bytes: 1024 * 1024,
             last_updated: Some(Utc::now()),
+            index_revision: 4,
         };
 
         let json = serde_json::to_string(&stats).unwrap();
@@ -843,6 +849,16 @@ mod tests {
 
         assert_eq!(stats.total_chunks, deserialized.total_chunks);
         assert_eq!(stats.total_files, deserialized.total_files);
+        assert_eq!(stats.index_revision, deserialized.index_revision);
+    }
+
+    #[test]
+    fn old_store_stats_json_defaults_revision() {
+        let deserialized: StoreStats = serde_json::from_str(
+            r#"{"total_chunks":1,"total_files":1,"index_size_bytes":0,"last_updated":null}"#,
+        )
+        .unwrap();
+        assert_eq!(deserialized.index_revision, 0);
     }
 
     // ==================== IndexStats Tests ====================

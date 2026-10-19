@@ -13,6 +13,9 @@ pub const CHUNKS_SCHEMA_VERSION: u32 = 2;
 /// Sidecar written beside the Lance database (`…/indices/<hash>/ragfs-schema.json`).
 pub const SCHEMA_SIDECAR_FILENAME: &str = "ragfs-schema.json";
 
+/// First assigned revision for a new or lazily migrated index.
+pub const INITIAL_INDEX_REVISION: u64 = 1;
+
 /// Persisted schema version for an existing Lance index.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SchemaSidecar {
@@ -23,6 +26,34 @@ pub struct SchemaSidecar {
     /// Embedder model id that wrote this index, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embedding_model: Option<String>,
+    /// Monotonic retrieval revision. Missing on pre-receipt indexes (`0`).
+    ///
+    /// This is sidecar metadata, not a Lance table schema change:
+    /// `CHUNKS_SCHEMA_VERSION` stays at 2. Old sidecars deserialize to `0`
+    /// and `init` persists [`INITIAL_INDEX_REVISION`] without rewriting tables.
+    #[serde(default)]
+    pub index_revision: u64,
+}
+
+impl Default for SchemaSidecar {
+    fn default() -> Self {
+        Self {
+            chunks_schema_version: CHUNKS_SCHEMA_VERSION,
+            embedding_dim: None,
+            embedding_model: None,
+            index_revision: 0,
+        }
+    }
+}
+
+/// Treat `0` (missing / uninitialized) as the first persisted revision.
+#[must_use]
+pub fn effective_index_revision(stored: u64) -> u64 {
+    if stored == 0 {
+        INITIAL_INDEX_REVISION
+    } else {
+        stored
+    }
 }
 
 /// Scope columns missing from a pre-v2 chunks table (nullable so `add_columns` can fill nulls).
@@ -142,5 +173,31 @@ mod tests {
         assert_eq!(s.chunks_schema_version, 2);
         assert_eq!(s.embedding_dim, None);
         assert_eq!(s.embedding_model, None);
+        assert_eq!(s.index_revision, 0);
+        assert_eq!(
+            effective_index_revision(s.index_revision),
+            INITIAL_INDEX_REVISION
+        );
+    }
+
+    #[test]
+    fn old_sidecar_without_revision_does_not_bump_schema_version() {
+        let s: SchemaSidecar = serde_json::from_str(r#"{"chunks_schema_version":2}"#).unwrap();
+        assert_eq!(s.chunks_schema_version, CHUNKS_SCHEMA_VERSION);
+        assert_eq!(CHUNKS_SCHEMA_VERSION, 2);
+    }
+
+    #[test]
+    fn sidecar_round_trips_index_revision() {
+        let original = SchemaSidecar {
+            chunks_schema_version: CHUNKS_SCHEMA_VERSION,
+            embedding_dim: Some(384),
+            embedding_model: Some("thenlper/gte-small".into()),
+            index_revision: 7,
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let parsed: SchemaSidecar = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, original);
+        assert!(json.contains("\"index_revision\":7"));
     }
 }

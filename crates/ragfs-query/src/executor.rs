@@ -294,6 +294,7 @@ mod tests {
                 total_files: 0,
                 index_size_bytes: 0,
                 last_updated: None,
+                index_revision: 0,
             })
         }
 

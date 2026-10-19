@@ -11,6 +11,7 @@ This document captures key architectural decisions made in RAGFS and the rationa
 - [ADR-005: Registry Pattern for Extractors and Chunkers](#adr-005-registry-pattern-for-extractors-and-chunkers)
 - [ADR-006: Content-Addressed Storage with Blake3](#adr-006-content-addressed-storage-with-blake3)
 - [ADR-007: Async-First Design with Tokio](#adr-007-async-first-design-with-tokio)
+- [ADR-008: Index Revision Sidecar and Local Query Receipts](#adr-008-index-revision-sidecar-and-local-query-receipts)
 
 ---
 
@@ -420,6 +421,55 @@ pub trait VectorStore: Send + Sync {
 
 ---
 
+## ADR-008: Index Revision Sidecar and Local Query Receipts
+
+### Status
+Accepted
+
+### Context
+Issue #152 (idea from @Nomad-link-id / Igor Eduardo) needs a stable id for the
+retrieval corpus and an optional local record of what a query returned. Open
+choices: where to persist the id, its type, whether to bump
+`CHUNKS_SCHEMA_VERSION`, receipt location, and whether to add list/show or FUSE
+surfaces.
+
+### Decision
+1. **Revision is a `u64` counter** stored as `index_revision` on the existing
+   `ragfs-schema.json` sidecar (next to `index.lance`). It is **not** a Lance
+   column and **`CHUNKS_SCHEMA_VERSION` stays at 2**.
+2. **Old indexes stay readable.** A sidecar without the field deserializes as
+   `0`. `init` persists `1` without rewriting tables or forcing a reindex.
+   Subsequent queries see the same value until an index write.
+3. **Bump on content writes only:** `upsert_chunks` (non-empty),
+   `delete_by_file_path`, and `update_file_path` (once). Reads (`search`,
+   `hybrid_search`, `stats`, `get_*`, `init`) do not increment.
+4. **Query JSON is additive.** Existing `query` / `results[]` fields are
+   unchanged. New fields: `index_revision`, `ragfs_version`, `embedding_model`,
+   and `receipt_path` only when a receipt is saved.
+5. **Receipts are opt-in and local.** `ragfs query --save-receipt [PATH]` writes
+   JSON under `<index-dir>/receipts/` by default
+   (`~/.local/share/ragfs/indices/<hash>/receipts/`). No network, no telemetry,
+   no config key, no list/show CLI, no FUSE virtual file — the issue did not
+   ask for those.
+
+### Rationale
+- Sidecar metadata avoids a schema migration and a Lance rewrite.
+- A counter is enough to detect “same index vs after a write” and is easy to
+  test. A UUID would change identity without adding meaning.
+- Default receipt path lives in the index directory so deleting the index
+  deletes the receipts (“kept for as long as the index, and removed with it”).
+
+### Alternatives considered
+
+| Alternative | Rejected because |
+|-------------|------------------|
+| Bump `CHUNKS_SCHEMA_VERSION` to 3 | Not a table-schema change; would imply a Lance migration |
+| UUID / content hash as revision | Harder to reason about; hash would need a full scan |
+| Always write receipts | Issue asked for opt-in |
+| FUSE `.revision` / receipt list CLI | Out of issue scope |
+
+---
+
 ## Summary
 
 | Decision | Key Driver |
@@ -431,6 +481,7 @@ pub trait VectorStore: Send + Sync {
 | Registry pattern | Extensibility |
 | Blake3 hashing | Performance, reliability |
 | Tokio async | Concurrency, I/O efficiency |
+| Sidecar index revision + opt-in receipts | Backward-compatible audit of retrieval |
 
 These decisions collectively create a system that is:
 - **Private**: All processing local

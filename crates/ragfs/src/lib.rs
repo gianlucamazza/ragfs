@@ -4,8 +4,10 @@
 //! to the indexer, query executor, and embedder.
 
 pub mod config;
+pub mod receipt;
 
 pub use config::{Config, ConfigError, SUPPORTED_EMBEDDING_MODEL, resolve_supported_model};
+pub use receipt::{QueryOutput, QueryReceipt, ResultItem};
 
 #[cfg(test)]
 mod docs_drift {
