@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ragfs-mcp"
-version = "0.2.1"
+version = "0.2.2"
 description = "MCP server for RAGFS semantic filesystem"
 readme = "README.md"
 license = { text = "MIT OR Apache-2.0" }
