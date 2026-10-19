@@ -7,32 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-19
+
+MCP server hardening for the local stdio `ragfs-mcp` package (issue #164, PRs #166–#172), plus accepted ADR-009 (docs-only transparent memory benchmark harness) and smaller Rust fixes (#161, #162).
+
+### Breaking / behaviour changes (MCP)
+
+- **BREAKING**: Mutating MCP tools stay disabled until `RAGFS_MCP_ALLOW_WRITES=1`. Affected: `ragfs_delete_to_trash`, `ragfs_restore_from_trash`, `ragfs_undo`, `ragfs_approve_plan`, `ragfs_reject_plan`, and `ragfs_batch_operations` when `dry_run` is false. Reads and dry-run batches are unchanged (#167).
+- **BREAKING**: Jail roots are `RAGFS_SOURCE_PATH` plus optional `RAGFS_ALLOWED_ROOTS` (`os.pathsep`-separated), each resolved with `realpath`. `index` must be an allowlisted root or the recorded source of a known index; hex index ids map to that recorded source and do **not** fall back to `RAGFS_SOURCE_PATH` or cwd. `ragfs_similar` applies the same allowlist to `file_path` (#167, #168).
+- **BREAKING**: Batch / delete paths construct the safety manager with the source tree as the jail. If soft-delete cannot complete, the call fails instead of removing the file without a recoverable trash entry (#166).
+- Over-limit `limit`, query length, `max_groups`, batch operation count, and per-op `content` size are **rejected** (not clamped). Each cap is overridable via env (table below). Every tool call also has a wall-clock timeout and a per-process rate limit (#169).
+- Client-visible errors include a stable `code` and no longer echo absolute host paths or raw exception internals (#171).
+
 ### Added
-- MCP tool errors include a stable `code` (`INDEX_NOT_FOUND`, `PATH_OUTSIDE_ROOT`, `WRITES_DISABLED`, `LIMIT_EXCEEDED`, `TIMEOUT`, `RATE_LIMITED`, `INTERNAL`, …). Full exception detail is logged at debug on stderr only (issue #164 MCP-05).
-- MCP writes one structured JSON audit line per tool call to stderr (`timestamp`, `tool`, redacted `args`, `outcome`, `duration_ms`, `write`). Disable with `RAGFS_MCP_AUDIT_LOG=0`. Python log level is `RAGFS_MCP_LOG_LEVEL` (issue #164 MCP-06).
-- MCP `ToolAnnotations` (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`, and a UI `title`) on every `ragfs-mcp` tool (issue #164 MCP-01). Hints are not permissions.
-- `RAGFS_ALLOWED_ROOTS` and `RAGFS_MCP_ALLOW_WRITES` environment variables for the MCP server.
+- MCP tool errors include a stable `code` (`INDEX_NOT_FOUND`, `PATH_OUTSIDE_ROOT`, `WRITES_DISABLED`, `LIMIT_EXCEEDED`, `TIMEOUT`, `RATE_LIMITED`, `INTERNAL`, …). Full exception detail is logged at debug on stderr only (issue #164 MCP-05, #171).
+- MCP writes one structured JSON audit line per tool call to stderr (`timestamp`, `tool`, redacted `args`, `outcome`, `duration_ms`, `write`). Disable with `RAGFS_MCP_AUDIT_LOG=0`. Python log level is `RAGFS_MCP_LOG_LEVEL` (issue #164 MCP-06, #171).
+- MCP `ToolAnnotations` (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`, and a UI `title`) on every `ragfs-mcp` tool (issue #164 MCP-01, #170). Hints are not permissions.
+- `RAGFS_ALLOWED_ROOTS` and `RAGFS_MCP_ALLOW_WRITES` environment variables for the MCP server, plus overridable input caps, timeout, rate limit, and audit/log settings (table below).
+- Persist query receipts with an index revision id (`ragfs query --save-receipt`) (#162).
 - Accepted ADR-009: transparent memory benchmark harness for ragfs and
   emotional-memory (protocol, pinned public datasets, versioned facts,
-  strict/lenient metrics). Design only; implementation follows in phased PRs.
+  strict/lenient metrics). Design only; implementation follows in phased PRs (#165).
 
 ### Changed
-- **Behaviour change:** MCP tool error payloads now include a `code` field. Client-visible `error` text no longer includes absolute host paths or raw exception internals (issue #164 MCP-05).
-- **Behaviour change:** MCP tools now reject over-limit inputs that previously ran unbounded (`limit`, query length, `max_groups`, batch operation count, and per-op `content` size). Each cap is overridable with a `RAGFS_MCP_*` env var. Every tool call also has a wall-clock timeout and a per-process rate limit.
-- **Behaviour change:** Mutating MCP tools now need `RAGFS_MCP_ALLOW_WRITES=1` (`ragfs_delete_to_trash`, `ragfs_restore_from_trash`, `ragfs_undo`, `ragfs_approve_plan`, `ragfs_reject_plan`, and `ragfs_batch_operations` when `dry_run` is false). Reads and dry runs are unchanged.
-- MCP jail roots are allowlisted from `RAGFS_SOURCE_PATH` and optional `RAGFS_ALLOWED_ROOTS` (`os.pathsep`-separated), each resolved with `realpath`. `index` must be an allowlisted root or the recorded source of a known index; hex index ids map to that recorded source and do not fall back to `RAGFS_SOURCE_PATH` or cwd.
+- **BREAKING**: Mutating MCP tools now need `RAGFS_MCP_ALLOW_WRITES=1` (`ragfs_delete_to_trash`, `ragfs_restore_from_trash`, `ragfs_undo`, `ragfs_approve_plan`, `ragfs_reject_plan`, and `ragfs_batch_operations` when `dry_run` is false). Reads and dry runs are unchanged (#167).
+- **BREAKING**: MCP jail roots are allowlisted from `RAGFS_SOURCE_PATH` and optional `RAGFS_ALLOWED_ROOTS` (`os.pathsep`-separated), each resolved with `realpath`. `index` must be an allowlisted root or the recorded source of a known index; hex index ids map to that recorded source and do not fall back to `RAGFS_SOURCE_PATH` or cwd (#167, #168).
+- MCP tool error payloads now include a `code` field. Client-visible `error` text no longer includes absolute host paths or raw exception internals (issue #164 MCP-05, #171).
+- MCP tools now reject over-limit inputs that previously ran unbounded (`limit`, query length, `max_groups`, batch operation count, and per-op `content` size). Each cap is overridable with a `RAGFS_MCP_*` env var. Every tool call also has a wall-clock timeout and a per-process rate limit (#169).
 
 ### Fixed
-- MCP batch operations construct the safety manager with the source tree as the jail and the index data dir for trash/history, so deletes can be undone. If soft-delete fails, the operation fails instead of permanently removing the file.
+- **BREAKING**: MCP batch operations construct the safety manager with the source tree as the jail and the index data dir for trash/history, so deletes can be undone. If soft-delete fails, the operation fails instead of removing the file without a recoverable trash entry (#166).
+- MCP `ragfs_similar` resolves `file_path` with `realpath` (symlinks included) and rejects paths outside the allowlisted roots (`RAGFS_SOURCE_PATH` plus `RAGFS_ALLOWED_ROOTS`). The error does not echo the resolved absolute path (#168).
+- Scoped ignore for transitive RUSTSEC-2024-0449 (`unsafe-libyaml` via lindera) (#161).
 
 ### Security
-- MCP tool responses no longer echo host paths or exception internals; each error has a stable code, and tool calls are audited on stderr (issue #164 MCP-05 / MCP-06).
-- MCP tools advertise accurate `ToolAnnotations` so clients can distinguish read vs write vs destructive operations (issue #164 MCP-01). Hints are not ACLs; writes still require `RAGFS_MCP_ALLOW_WRITES=1` and the root allowlist.
-- MCP tools reject unbounded `limit`, query length, `max_groups`, batch size, and per-op content, and apply a per-call timeout plus a per-process rate limit (issue #164 MCP-02 / MCP-07).
-- MCP `ragfs_similar` resolves `file_path` with `realpath` (symlinks included) and rejects paths outside the allowlisted roots (`RAGFS_SOURCE_PATH` plus `RAGFS_ALLOWED_ROOTS`). The error does not echo the resolved absolute path.
+- MCP tool responses no longer echo host paths or exception internals; each error has a stable code, and tool calls are audited on stderr (issue #164 MCP-05 / MCP-06, #171).
+- MCP tools advertise accurate `ToolAnnotations` so clients can distinguish read vs write vs destructive operations (issue #164 MCP-01, #170). Hints are not ACLs; writes still require `RAGFS_MCP_ALLOW_WRITES=1` and the root allowlist.
+- MCP tools reject unbounded `limit`, query length, `max_groups`, batch size, and per-op content, and apply a per-call timeout plus a per-process rate limit (issue #164 MCP-02 / MCP-07, #169).
+- Allowlisted filesystem roots and opt-in write tools for `ragfs-mcp` (#167, #168).
 
 ### Documentation
-- MCP is stdio-only: drop `ragfs mcp serve`, `:8080`, and “any transport”. `docs/MCP.md` has a Security model section (allowlist, opt-in writes, caps/timeout/rate limit, annotations as hints, error codes, stderr audit log) and documents that `ragfs_approve_plan` fails closed because the Python semantic manager has no `OpsManager` (issue #164 MCP-09 / MCP-10).
+- MCP is stdio-only: drop `ragfs mcp serve`, `:8080`, and “any transport”. `docs/MCP.md` has a Security model section (allowlist, opt-in writes, caps/timeout/rate limit, annotations as hints, error codes, stderr audit log) and documents that `ragfs_approve_plan` fails closed because the Python semantic manager has no `OpsManager` (issue #164 MCP-09 / MCP-10, #172).
+- Known limitation: `ragfs_approve_plan` remains **fail-closed**. It is write-gated and path-jailed, but the Python semantic manager has no `OpsManager`, so approve does not execute plans. Propose / list / get / reject continue to work.
+
+### MCP environment variables
+
+Defaults from `crates/ragfs-mcp/src/ragfs_mcp/server.py` (`DEFAULT_*` constants and `os.environ.get` fallbacks). Names match the code.
+
+| Variable | Default | Notes |
+|----------|---------|--------|
+| `RAGFS_SOURCE_PATH` | *(unset)* | Default source directory to hash (must match `ragfs index <path>`). Also the default allowlisted jail root. |
+| `RAGFS_ALLOWED_ROOTS` | *(unset)* | Extra allowlisted jail roots, `os.pathsep`-separated, each resolved with `realpath`. |
+| `RAGFS_MCP_ALLOW_WRITES` | *(unset)* | Set to `1` to enable mutating tools. Reads and `dry_run` batch calls work without it. |
+| `RAGFS_MCP_MAX_LIMIT` | `100` | Max `limit` for search, similar, and history. Matches CLI `[query].max_limit`. |
+| `RAGFS_MCP_MAX_QUERY_LENGTH` | `2000` | Max `ragfs_search` query length (same bound `ragfs_similar` already uses when embedding file text). |
+| `RAGFS_MCP_MAX_GROUPS` | `10` | Max `max_groups` for `ragfs_propose_organization`. Matches FUSE `OrganizeRequest` default. |
+| `RAGFS_MCP_MAX_BATCH_OPS` | `10` | Max operations in one `ragfs_batch_operations` call. |
+| `RAGFS_MCP_MAX_OP_CONTENT_BYTES` | `1048576` | Max UTF-8 bytes of `content` on one batch create/write (1 MiB; index `max_file_size` is 50MB). |
+| `RAGFS_MCP_TIMEOUT_SECONDS` | `30` | Wall-clock timeout per tool call (`DEFAULT_TIMEOUT_SECONDS = 30.0`). `0` disables. |
+| `RAGFS_MCP_RATE_LIMIT` | `30` | Max tool calls per process in one window. `0` disables. |
+| `RAGFS_MCP_RATE_WINDOW_SECONDS` | `60` | Sliding window for `RAGFS_MCP_RATE_LIMIT` (`DEFAULT_RATE_WINDOW_SECONDS = 60.0`). |
+| `RAGFS_MCP_AUDIT_LOG` | `1` | One structured JSON audit line per tool call on stderr. Set to `0` to disable. |
+| `RAGFS_MCP_LOG_LEVEL` | `WARNING` | Python logging level (`DEBUG` / `INFO` / `WARNING` / `ERROR`); logs on stderr only. |
+
+Related (pre-existing, still documented): `RAGFS_DATA_DIR`, `RAGFS_DB_PATH`, `RAGFS_MODEL_PATH`.
+
+### Upgrade notes
+
+1. Set `RAGFS_SOURCE_PATH` to the same path you indexed with `ragfs index`.
+2. Add any extra roots to `RAGFS_ALLOWED_ROOTS` if needed.
+3. Set `RAGFS_MCP_ALLOW_WRITES=1` only if the client must mutate the tree.
+4. Expect `LIMIT_EXCEEDED` / `PATH_OUTSIDE_ROOT` / `WRITES_DISABLED` codes where previous builds accepted unbounded or out-of-jail inputs.
 
 ## [0.2.1] - 2026-10-10
 
@@ -185,7 +230,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Content-addressed storage with blake3 hashing
 - Registry pattern for extensible extractors and chunkers
 
-[Unreleased]: https://github.com/gianlucamazza/ragfs/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/gianlucamazza/ragfs/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/gianlucamazza/ragfs/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/gianlucamazza/ragfs/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/gianlucamazza/ragfs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/gianlucamazza/ragfs/releases/tag/v0.1.0
