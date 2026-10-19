@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import types
 from pathlib import Path
 
 import blake3
@@ -96,6 +98,132 @@ class TestPathJail:
         blob = json.dumps(result)
         assert "escapes" in blob
         assert result.get("success") is False
+
+
+def _assert_similar_path_rejected(data: dict, *secret_paths: Path) -> None:
+    from ragfs_mcp.server import FILE_PATH_NOT_ALLOWED_ERROR
+
+    assert data.get("error") == FILE_PATH_NOT_ALLOWED_ERROR
+    blob = json.dumps(data)
+    for secret in secret_paths:
+        resolved = os.path.realpath(str(secret))
+        assert resolved not in blob
+        assert resolved not in data["error"]
+
+
+def _install_fake_ragfs(monkeypatch: pytest.MonkeyPatch, source_file: str) -> None:
+    """Stub ragfs so ragfs_similar can succeed without an embedder."""
+
+    class _Doc:
+        def __init__(self, path: str, content: str):
+            self.page_content = content
+            self.metadata = {"file_path": path}
+
+    class _Loader:
+        async def init(self):
+            return None
+
+        async def load(self, path: str):
+            return [_Doc(path, "hello from inside")]
+
+    class _Result:
+        def __init__(self, path: str, score: float):
+            self.document = _Doc(path, "other file")
+            self.score = score
+
+    class _Retriever:
+        def __init__(self, **kwargs):
+            pass
+
+        async def init(self):
+            return None
+
+        async def search(self, query, hybrid=False, k=5):
+            return [
+                _Result(source_file, 1.0),
+                _Result(str(Path(source_file).with_name("other.txt")), 0.8),
+            ]
+
+    fake = types.ModuleType("ragfs")
+    fake.RagfsDocumentLoader = _Loader
+    fake.RagfsRetriever = _Retriever
+    monkeypatch.setitem(sys.modules, "ragfs", fake)
+
+
+class TestSimilarPathJail:
+    """ragfs_similar file_path must stay inside allowlisted roots."""
+
+    @pytest.mark.asyncio
+    async def test_rejects_path_outside_roots(self, tmp_path: Path, monkeypatch):
+        from ragfs_mcp.server import ragfs_similar
+
+        allowed = tmp_path / "allowed"
+        outside = tmp_path / "outside"
+        allowed.mkdir()
+        outside.mkdir()
+        secret = outside / "secret.txt"
+        secret.write_text("secret")
+        monkeypatch.setenv("RAGFS_SOURCE_PATH", str(allowed))
+        monkeypatch.delenv("RAGFS_ALLOWED_ROOTS", raising=False)
+
+        data = json.loads(await ragfs_similar(file_path=str(secret)))
+        _assert_similar_path_rejected(data, secret)
+
+    @pytest.mark.asyncio
+    async def test_rejects_parent_traversal(self, tmp_path: Path, monkeypatch):
+        from ragfs_mcp.server import ragfs_similar
+
+        allowed = tmp_path / "allowed"
+        outside = tmp_path / "outside"
+        allowed.mkdir()
+        outside.mkdir()
+        secret = outside / "secret.txt"
+        secret.write_text("secret")
+        monkeypatch.setenv("RAGFS_SOURCE_PATH", str(allowed))
+        monkeypatch.delenv("RAGFS_ALLOWED_ROOTS", raising=False)
+        monkeypatch.chdir(allowed)
+
+        data = json.loads(await ragfs_similar(file_path="../outside/secret.txt"))
+        _assert_similar_path_rejected(data, secret)
+
+    @pytest.mark.asyncio
+    async def test_rejects_symlink_pointing_outside(self, tmp_path: Path, monkeypatch):
+        from ragfs_mcp.server import ragfs_similar
+
+        allowed = tmp_path / "allowed"
+        outside = tmp_path / "outside"
+        allowed.mkdir()
+        outside.mkdir()
+        secret = outside / "secret.txt"
+        secret.write_text("secret")
+        link = allowed / "escape.txt"
+        link.symlink_to(secret)
+        monkeypatch.setenv("RAGFS_SOURCE_PATH", str(allowed))
+        monkeypatch.delenv("RAGFS_ALLOWED_ROOTS", raising=False)
+
+        data = json.loads(await ragfs_similar(file_path=str(link)))
+        _assert_similar_path_rejected(data, secret, link)
+
+    @pytest.mark.asyncio
+    async def test_accepts_file_inside_root(self, tmp_path: Path, monkeypatch):
+        from ragfs_mcp.server import ragfs_similar
+
+        allowed = tmp_path / "allowed"
+        allowed.mkdir()
+        inside = allowed / "note.txt"
+        inside.write_text("hello from inside")
+        db_path = tmp_path / "index.lance"
+        db_path.mkdir()
+        monkeypatch.setenv("RAGFS_SOURCE_PATH", str(allowed))
+        monkeypatch.delenv("RAGFS_ALLOWED_ROOTS", raising=False)
+        monkeypatch.setenv("RAGFS_DB_PATH", str(db_path))
+        _install_fake_ragfs(monkeypatch, str(inside))
+
+        data = json.loads(await ragfs_similar(file_path=str(inside)))
+        assert "error" not in data
+        assert data["count"] >= 1
+        assert data["similar_files"]
+        assert os.path.realpath(str(inside)) == os.path.realpath(data["source_file"])
 
 
 class TestSafetyTools:
