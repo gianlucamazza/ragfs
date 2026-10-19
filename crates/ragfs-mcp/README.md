@@ -44,6 +44,7 @@ Mutating tools are off unless `RAGFS_MCP_ALLOW_WRITES=1`. Jail roots are `RAGFS_
       "command": "ragfs-mcp",
       "env": {
         "RAGFS_SOURCE_PATH": "/path/to/project",
+        "RAGFS_ALLOWED_ROOTS": "/path/to/other",
         "RAGFS_MCP_ALLOW_WRITES": "1"
       }
     }
