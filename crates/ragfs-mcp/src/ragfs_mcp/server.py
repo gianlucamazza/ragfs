@@ -43,7 +43,9 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import inspect
 import json
+import logging
 import os
 import re
 import sys
@@ -96,12 +98,87 @@ DEFAULT_RATE_LIMIT = 30  # stdio, one client; 30 calls / window stops embed loop
 DEFAULT_RATE_WINDOW_SECONDS = 60.0
 
 
+class ErrorCode:
+    """Stable MCP tool error codes. Client payloads use these, never host paths."""
+
+    INDEX_NOT_FOUND = "INDEX_NOT_FOUND"
+    PATH_OUTSIDE_ROOT = "PATH_OUTSIDE_ROOT"
+    WRITES_DISABLED = "WRITES_DISABLED"
+    LIMIT_EXCEEDED = "LIMIT_EXCEEDED"
+    TIMEOUT = "TIMEOUT"
+    RATE_LIMITED = "RATE_LIMITED"
+    INTERNAL = "INTERNAL"
+    PACKAGE_NOT_INSTALLED = "PACKAGE_NOT_INSTALLED"
+    FILE_NOT_FOUND = "FILE_NOT_FOUND"
+    INVALID_INPUT = "INVALID_INPUT"
+    PLAN_NOT_FOUND = "PLAN_NOT_FOUND"
+    NOT_REVERSIBLE = "NOT_REVERSIBLE"
+    EXTRACT_FAILED = "EXTRACT_FAILED"
+
+
 class IndexNotAllowedError(ValueError):
     """Raised when ``index`` is not an allowlisted root or a known index source."""
 
 
 class FilePathNotAllowedError(ValueError):
     """Raised when ``file_path`` resolves outside the allowlisted roots."""
+
+
+LOG = logging.getLogger("ragfs_mcp")
+
+_WRITE_TOOLS = frozenset(
+    {
+        "ragfs_delete_to_trash",
+        "ragfs_restore_from_trash",
+        "ragfs_undo",
+        "ragfs_approve_plan",
+        "ragfs_reject_plan",
+        "ragfs_propose_organization",
+        "ragfs_propose_cleanup",
+        "ragfs_batch_operations",
+    }
+)
+_PATH_ARG_KEYS = frozenset(
+    {"path", "file_path", "index", "source", "target", "scope"}
+)
+_SAFE_ARG_KEYS = frozenset(
+    {
+        "limit",
+        "hybrid",
+        "threshold",
+        "max_groups",
+        "atomic",
+        "dry_run",
+        "plan_id",
+        "undo_id",
+        "strategy",
+        "similarity_threshold",
+        "append",
+    }
+)
+_ABS_PATH_RE = re.compile(r"(?:[A-Za-z]:)?(?:/[\w.+@~-]+)+")
+
+
+def configure_logging() -> None:
+    """Send Python logs to stderr (stdio stdout is the MCP channel)."""
+    level_name = os.environ.get("RAGFS_MCP_LOG_LEVEL", "WARNING").upper()
+    level = getattr(logging, level_name, logging.WARNING)
+    if not LOG.handlers:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+        )
+        LOG.addHandler(handler)
+    LOG.setLevel(level)
+    LOG.propagate = False
+
+
+configure_logging()
+
+
+def audit_log_enabled() -> bool:
+    """Structured audit lines are on by default; ``RAGFS_MCP_AUDIT_LOG=0`` disables."""
+    return os.environ.get("RAGFS_MCP_AUDIT_LOG", "1") != "0"
 
 
 def _project_data_dir() -> Path:
@@ -266,8 +343,171 @@ def _recorded_source_paths() -> set[str]:
     return paths
 
 
-def _json_error(message: str) -> str:
-    return json.dumps({"error": message})
+def _sanitize_client_text(text: str) -> str:
+    """Strip absolute host paths from a client-facing error message."""
+    if not text:
+        return text
+    for root in sorted(build_allowed_roots(), key=len, reverse=True):
+        if root:
+            text = text.replace(root, "<root>")
+    home = str(Path.home())
+    if home:
+        text = text.replace(home, "<home>")
+    text = _ABS_PATH_RE.sub("<path>", text)
+    text = re.sub(r":\s*(<path>|<root>|<home>)\s*$", "", text)
+    text = re.sub(r"\s{2,}", " ", text).strip()
+    return text
+
+
+def _json_error(code: str, message: str, **extra: Any) -> str:
+    payload: dict[str, Any] = {
+        "error": _sanitize_client_text(message),
+        "code": code,
+    }
+    payload.update(extra)
+    return json.dumps(payload)
+
+
+def classify_exception(exc: BaseException) -> tuple[str, str]:
+    """Map an exception to a stable code and a path-free short message."""
+    if isinstance(exc, FilePathNotAllowedError):
+        return ErrorCode.PATH_OUTSIDE_ROOT, FILE_PATH_NOT_ALLOWED_ERROR
+    if isinstance(exc, IndexNotAllowedError):
+        return ErrorCode.PATH_OUTSIDE_ROOT, INDEX_NOT_ALLOWED_ERROR
+    if isinstance(exc, ImportError):
+        return ErrorCode.PACKAGE_NOT_INSTALLED, "ragfs package not installed"
+    message = str(exc)
+    lowered = message.lower()
+    if "escapes" in lowered:
+        return ErrorCode.PATH_OUTSIDE_ROOT, "Path escapes source root"
+    if "not an allowed root" in lowered:
+        return ErrorCode.PATH_OUTSIDE_ROOT, INDEX_NOT_ALLOWED_ERROR
+    if "outside allowed" in lowered:
+        return ErrorCode.PATH_OUTSIDE_ROOT, FILE_PATH_NOT_ALLOWED_ERROR
+    return ErrorCode.INTERNAL, "Internal error"
+
+
+def _client_error(exc: BaseException) -> str:
+    """JSON error for the client; full detail goes to stderr at debug only."""
+    code, message = classify_exception(exc)
+    LOG.debug("MCP tool error %s: %s", code, exc, exc_info=True)
+    return _json_error(code, message)
+
+
+def _package_missing_error(message: str | None = None) -> str:
+    return _json_error(
+        ErrorCode.PACKAGE_NOT_INSTALLED,
+        message or "ragfs package not installed",
+    )
+
+
+def redact_path(value: str | None) -> str | None:
+    """Log a path relative to an allowlisted root, or ``<outside-root>``."""
+    if value is None:
+        return None
+    if value in ("", "default") or _INDEX_HASH_RE.fullmatch(value):
+        return value
+    candidates = [value]
+    if not os.path.isabs(os.path.expanduser(value)):
+        for root in build_allowed_roots():
+            candidates.append(os.path.join(root, value))
+    for candidate in candidates:
+        try:
+            resolved = _realpath(candidate)
+        except OSError:
+            continue
+        for root in build_allowed_roots():
+            if _is_under_root(resolved, root):
+                rel = os.path.relpath(resolved, root)
+                return "." if rel == "." else rel.replace(os.sep, "/")
+    return "<outside-root>"
+
+
+def _redact_operation(op: Any) -> dict[str, Any]:
+    if hasattr(op, "model_dump"):
+        data = op.model_dump()
+    elif isinstance(op, dict):
+        data = op
+    else:
+        return {"action": "<unknown>"}
+    redacted: dict[str, Any] = {"action": data.get("action")}
+    for key in ("source", "target"):
+        if key in data and data[key] is not None:
+            redacted[key] = redact_path(str(data[key]))
+    return redacted
+
+
+def redact_args(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Summarize tool args: no contents, query text, env, or absolute paths."""
+    out: dict[str, Any] = {}
+    for key, value in kwargs.items():
+        if key in {"content", "self", "cls"}:
+            continue
+        if key == "query":
+            out["query_len"] = len(value) if isinstance(value, str) else 0
+            continue
+        if key == "operations" and isinstance(value, list):
+            out["operations"] = [_redact_operation(op) for op in value]
+            out["op_count"] = len(value)
+            continue
+        if key in _PATH_ARG_KEYS and isinstance(value, str):
+            out[key] = redact_path(value)
+            continue
+        if key in _SAFE_ARG_KEYS:
+            out[key] = value
+    return out
+
+
+def _bound_tool_args(
+    func: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any]
+) -> dict[str, Any]:
+    try:
+        bound = inspect.signature(func).bind_partial(*args, **kwargs)
+        bound.apply_defaults()
+        return dict(bound.arguments)
+    except TypeError:
+        return dict(kwargs)
+
+
+def _is_write_call(tool: str, kwargs: dict[str, Any]) -> bool:
+    if tool == "ragfs_batch_operations" and kwargs.get("dry_run"):
+        return False
+    return tool in _WRITE_TOOLS
+
+
+def _outcome_from_result(result: str) -> str:
+    try:
+        data = json.loads(result)
+    except json.JSONDecodeError:
+        return ErrorCode.INTERNAL
+    if isinstance(data, dict) and "error" in data and data.get("success") is not True:
+        code = data.get("code")
+        if isinstance(code, str) and code:
+            return code
+        return ErrorCode.INTERNAL
+    return "ok"
+
+
+def emit_audit_log(
+    *,
+    tool: str,
+    args: dict[str, Any],
+    outcome: str,
+    duration_ms: int,
+    write: bool,
+) -> None:
+    """One JSON line on stderr. Never write to stdout (MCP stdio)."""
+    if not audit_log_enabled():
+        return
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "tool": tool,
+        "args": redact_args(args),
+        "outcome": outcome,
+        "duration_ms": duration_ms,
+        "write": write,
+    }
+    print(json.dumps(record), file=sys.stderr, flush=True)
 
 
 def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
@@ -340,7 +580,8 @@ class _RateLimiter:
         self._calls = [t for t in self._calls if now - t < window]
         if len(self._calls) >= allowed:
             return _json_error(
-                f"Rate limit exceeded: {allowed} calls per {window:g} seconds"
+                ErrorCode.RATE_LIMITED,
+                f"Rate limit exceeded: {allowed} calls per {window:g} seconds",
             )
         self._calls.append(now)
         return None
@@ -361,7 +602,9 @@ async def _await_with_timeout(coro: Awaitable[str]) -> str:
             return await coro
         return await asyncio.wait_for(coro, timeout=timeout)
     except asyncio.TimeoutError:
-        return _json_error(f"Tool call timed out after {timeout} seconds")
+        return _json_error(
+            ErrorCode.TIMEOUT, f"Tool call timed out after {timeout} seconds"
+        )
 
 
 async def run_limited(coro: Awaitable[str]) -> str:
@@ -376,46 +619,67 @@ async def run_limited(coro: Awaitable[str]) -> str:
 
 
 def with_limits(func: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str]]:
-    """Wrap a tool so every invocation is rate-limited and time-bounded."""
+    """Wrap a tool so every invocation is rate-limited, timed, and audited."""
 
     @functools.wraps(func)
     async def wrapper(*args: Any, **kwargs: Any) -> str:
-        limited = _RATE_LIMITER.check()
-        if limited:
-            return limited
-        return await _await_with_timeout(func(*args, **kwargs))
+        started = time.perf_counter()
+        outcome = ErrorCode.INTERNAL
+        bound_args = _bound_tool_args(func, args, kwargs)
+        try:
+            limited = _RATE_LIMITER.check()
+            if limited:
+                result = limited
+            else:
+                result = await _await_with_timeout(func(*args, **kwargs))
+            outcome = _outcome_from_result(result)
+            return result
+        finally:
+            emit_audit_log(
+                tool=func.__name__,
+                args=bound_args,
+                outcome=outcome,
+                duration_ms=int(round((time.perf_counter() - started) * 1000)),
+                write=_is_write_call(func.__name__, bound_args),
+            )
 
     return wrapper
 
 
 def _validate_limit(limit: int) -> str | None:
     if limit < 1:
-        return _json_error("limit must be >= 1")
+        return _json_error(ErrorCode.LIMIT_EXCEEDED, "limit must be >= 1")
     cap = max_limit()
     if limit > cap:
-        return _json_error(f"limit {limit} exceeds maximum of {cap}")
+        return _json_error(
+            ErrorCode.LIMIT_EXCEEDED, f"limit {limit} exceeds maximum of {cap}"
+        )
     return None
 
 
 def _validate_query(query: str) -> str | None:
     cap = max_query_length()
     if len(query) > cap:
-        return _json_error(f"query exceeds maximum length of {cap}")
+        return _json_error(
+            ErrorCode.LIMIT_EXCEEDED, f"query exceeds maximum length of {cap}"
+        )
     return None
 
 
 def _validate_max_groups(value: int) -> str | None:
     if value < 1:
-        return _json_error("max_groups must be >= 1")
+        return _json_error(ErrorCode.LIMIT_EXCEEDED, "max_groups must be >= 1")
     cap = max_groups()
     if value > cap:
-        return _json_error(f"max_groups {value} exceeds maximum of {cap}")
+        return _json_error(
+            ErrorCode.LIMIT_EXCEEDED, f"max_groups {value} exceeds maximum of {cap}"
+        )
     return None
 
 
 def _validate_threshold(name: str, value: float) -> str | None:
     if value < 0.0 or value > 1.0:
-        return _json_error(f"{name} must be between 0 and 1")
+        return _json_error(ErrorCode.INVALID_INPUT, f"{name} must be between 0 and 1")
     return None
 
 
@@ -494,7 +758,9 @@ def parse_batch_operations(
 ) -> tuple[list[BatchOperation] | None, str | None]:
     cap = max_batch_ops()
     if len(operations) > cap:
-        return None, _json_error(f"batch exceeds maximum of {cap} operations")
+        return None, _json_error(
+            ErrorCode.LIMIT_EXCEEDED, f"batch exceeds maximum of {cap} operations"
+        )
     content_cap = max_op_content_bytes()
     parsed: list[BatchOperation] = []
     for i, op in enumerate(operations):
@@ -503,21 +769,28 @@ def parse_batch_operations(
         elif isinstance(op, dict):
             data = op
         else:
-            return None, _json_error(f"operations[{i}] must be an object")
+            return None, _json_error(
+                ErrorCode.INVALID_INPUT, f"operations[{i}] must be an object"
+            )
         action = data.get("action", "")
         model_cls = _ACTION_MODELS.get(action)
         if model_cls is None:
-            return None, _json_error(f"Unknown action: {action}")
+            return None, _json_error(
+                ErrorCode.INVALID_INPUT, f"Unknown action: {action}"
+            )
         try:
             model = model_cls.model_validate(data)
         except ValidationError as exc:
-            return None, _json_error(_batch_validation_message(action, exc))
+            return None, _json_error(
+                ErrorCode.INVALID_INPUT, _batch_validation_message(action, exc)
+            )
         content = getattr(model, "content", None)
         if isinstance(content, str):
             size = len(content.encode("utf-8"))
             if size > content_cap:
                 return None, _json_error(
-                    f"operation content exceeds maximum of {content_cap} bytes"
+                    ErrorCode.LIMIT_EXCEEDED,
+                    f"operation content exceeds maximum of {content_cap} bytes",
                 )
         parsed.append(model)
     return parsed, None
@@ -580,20 +853,23 @@ async def ragfs_search(
     if invalid:
         return invalid
 
-    try:
-        from ragfs import RagfsRetriever
-    except ImportError:
-        return '{"error": "ragfs package not installed. Install from source (not PyPI): pip install ./crates/ragfs-python"}'
-
     import json
 
     db_path = get_db_path(index)
 
     if not Path(db_path).exists():
-        return json.dumps({
-            "error": f"Index '{index}' not found at {db_path}",
-            "hint": "Index a directory first using the ragfs CLI: ragfs index /path/to/dir",
-        })
+        return _json_error(
+            ErrorCode.INDEX_NOT_FOUND,
+            "Index not found",
+            hint="Index a directory first using the ragfs CLI: ragfs index /path/to/dir",
+        )
+
+    try:
+        from ragfs import RagfsRetriever
+    except ImportError:
+        return _package_missing_error(
+            "ragfs package not installed. Install from source (not PyPI): pip install ./crates/ragfs-python"
+        )
 
     try:
         retriever = RagfsRetriever(
@@ -623,7 +899,7 @@ async def ragfs_search(
         }, indent=2)
 
     except Exception as e:  # noqa: BLE001
-        return json.dumps({"error": str(e)})
+        return _client_error(e)
 
 
 @mcp.tool(
@@ -726,21 +1002,21 @@ async def ragfs_similar(
     try:
         source_resolved = resolve_file_under_allowed_roots(file_path)
     except FilePathNotAllowedError:
-        return _json_error(FILE_PATH_NOT_ALLOWED_ERROR)
+        return _json_error(ErrorCode.PATH_OUTSIDE_ROOT, FILE_PATH_NOT_ALLOWED_ERROR)
 
     source = Path(source_resolved)
     if not source.exists():
-        return json.dumps({"error": "File not found"})
+        return _json_error(ErrorCode.FILE_NOT_FOUND, "File not found")
 
     try:
         from ragfs import RagfsDocumentLoader, RagfsRetriever
     except ImportError:
-        return '{"error": "ragfs package not installed"}'
+        return _package_missing_error()
 
     db_path = get_db_path(index)
 
     if not Path(db_path).exists():
-        return json.dumps({"error": f"Index '{index}' not found"})
+        return _json_error(ErrorCode.INDEX_NOT_FOUND, "Index not found")
 
     try:
         # Load and extract content from the source file
@@ -749,7 +1025,9 @@ async def ragfs_similar(
         docs = await loader.load(str(source))
 
         if not docs:
-            return json.dumps({"error": "Could not extract content from file"})
+            return _json_error(
+                ErrorCode.EXTRACT_FAILED, "Could not extract content from file"
+            )
 
         # Use the content as query
         content = docs[0].page_content[:2000]  # Limit query size
@@ -786,7 +1064,7 @@ async def ragfs_similar(
         }, indent=2)
 
     except Exception as e:  # noqa: BLE001
-        return json.dumps({"error": str(e)})
+        return _client_error(e)
 
 
 @mcp.tool(
@@ -882,14 +1160,36 @@ def _resolve_source(index: str) -> str | None:
     try:
         get_source_path(index)
     except IndexNotAllowedError as exc:
-        return _json_error(str(exc))
+        LOG.debug("index not allowed: %s", exc)
+        return _json_error(ErrorCode.PATH_OUTSIDE_ROOT, INDEX_NOT_ALLOWED_ERROR)
     return None
 
 
 def _deny_writes() -> str | None:
     if writes_allowed():
         return None
-    return _json_error(WRITES_DISABLED_ERROR)
+    return _json_error(ErrorCode.WRITES_DISABLED, WRITES_DISABLED_ERROR)
+
+
+def _resolve_user_path(source_root: str, user_path: str) -> str:
+    """Resolve ``user_path`` the same way the FUSE jail does (relative to source)."""
+    expanded = os.path.expanduser(user_path)
+    if os.path.isabs(expanded):
+        return _realpath(expanded)
+    return _realpath(os.path.join(source_root, expanded))
+
+
+def _ensure_under_source(source_root: str, user_path: str) -> str | None:
+    """Reject a user path that escapes the jail root (no host path in the reply)."""
+    resolved = _resolve_user_path(source_root, user_path)
+    if _is_under_root(resolved, source_root):
+        return None
+    LOG.debug("path escapes source root: %s (root=%s)", resolved, source_root)
+    return _json_error(
+        ErrorCode.PATH_OUTSIDE_ROOT,
+        "Path escapes source root",
+        success=False,
+    )
 
 
 @mcp.tool(
@@ -927,12 +1227,16 @@ async def ragfs_delete_to_trash(
     if denied:
         return denied
 
+    source_path = get_source_path(index)
+    escaped = _ensure_under_source(source_path, path)
+    if escaped:
+        return escaped
+
     try:
         from ragfs import RagfsSafetyManager
     except ImportError:
-        return json.dumps({"error": "ragfs package not installed"})
+        return _package_missing_error()
 
-    source_path = get_source_path(index)
     db_path = get_db_path(index)
 
     try:
@@ -949,7 +1253,7 @@ async def ragfs_delete_to_trash(
         }, indent=2)
 
     except Exception as e:  # noqa: BLE001
-        return json.dumps({"error": str(e)})
+        return _client_error(e)
 
 
 @mcp.tool(
@@ -980,7 +1284,7 @@ async def ragfs_list_trash(index: str = "default") -> str:
     try:
         from ragfs import RagfsSafetyManager
     except ImportError:
-        return json.dumps({"error": "ragfs package not installed"})
+        return _package_missing_error()
 
     source_path = get_source_path(index)
     db_path = get_db_path(index)
@@ -1005,7 +1309,7 @@ async def ragfs_list_trash(index: str = "default") -> str:
         }, indent=2)
 
     except Exception as e:  # noqa: BLE001
-        return json.dumps({"error": str(e)})
+        return _client_error(e)
 
 
 @mcp.tool(
@@ -1043,7 +1347,7 @@ async def ragfs_restore_from_trash(
     try:
         from ragfs import RagfsSafetyManager
     except ImportError:
-        return json.dumps({"error": "ragfs package not installed"})
+        return _package_missing_error()
 
     source_path = get_source_path(index)
     db_path = get_db_path(index)
@@ -1059,7 +1363,7 @@ async def ragfs_restore_from_trash(
         }, indent=2)
 
     except Exception as e:  # noqa: BLE001
-        return json.dumps({"error": str(e)})
+        return _client_error(e)
 
 
 @mcp.tool(
@@ -1101,7 +1405,7 @@ async def ragfs_get_history(
     try:
         from ragfs import RagfsSafetyManager
     except ImportError:
-        return json.dumps({"error": "ragfs package not installed"})
+        return _package_missing_error()
 
     source_path = get_source_path(index)
     db_path = get_db_path(index)
@@ -1131,7 +1435,7 @@ async def ragfs_get_history(
         }, indent=2)
 
     except Exception as e:  # noqa: BLE001
-        return json.dumps({"error": str(e)})
+        return _client_error(e)
 
 
 @mcp.tool(
@@ -1169,7 +1473,7 @@ async def ragfs_undo(
     try:
         from ragfs import RagfsSafetyManager
     except ImportError:
-        return json.dumps({"error": "ragfs package not installed"})
+        return _package_missing_error()
 
     source_path = get_source_path(index)
     db_path = get_db_path(index)
@@ -1179,10 +1483,11 @@ async def ragfs_undo(
 
         # Check if operation can be undone
         if not safety.can_undo(undo_id):
-            return json.dumps({
-                "success": False,
-                "error": "Operation cannot be undone (not reversible or already undone)",
-            })
+            return _json_error(
+                ErrorCode.NOT_REVERSIBLE,
+                "Operation cannot be undone (not reversible or already undone)",
+                success=False,
+            )
 
         result = await safety.undo(undo_id)
 
@@ -1192,7 +1497,7 @@ async def ragfs_undo(
         }, indent=2)
 
     except Exception as e:  # noqa: BLE001
-        return json.dumps({"error": str(e)})
+        return _client_error(e)
 
 
 # =============================================================================
@@ -1237,7 +1542,7 @@ async def ragfs_find_duplicates(
     try:
         from ragfs import RagfsSemanticManager
     except ImportError:
-        return json.dumps({"error": "ragfs package not installed"})
+        return _package_missing_error()
 
     source_path = get_source_path(index)
     db_path = get_db_path(index)
@@ -1270,7 +1575,7 @@ async def ragfs_find_duplicates(
         }, indent=2)
 
     except Exception as e:  # noqa: BLE001
-        return json.dumps({"error": str(e)})
+        return _client_error(e)
 
 
 @mcp.tool(
@@ -1306,7 +1611,7 @@ async def ragfs_analyze_cleanup(index: str = "default") -> str:
     try:
         from ragfs import RagfsSemanticManager
     except ImportError:
-        return json.dumps({"error": "ragfs package not installed"})
+        return _package_missing_error()
 
     source_path = get_source_path(index)
     db_path = get_db_path(index)
@@ -1337,7 +1642,7 @@ async def ragfs_analyze_cleanup(index: str = "default") -> str:
         }, indent=2)
 
     except Exception as e:  # noqa: BLE001
-        return json.dumps({"error": str(e)})
+        return _client_error(e)
 
 
 # =============================================================================
@@ -1396,7 +1701,7 @@ async def ragfs_propose_organization(
     try:
         from ragfs import OrganizeRequest, OrganizeStrategy, RagfsSemanticManager
     except ImportError:
-        return json.dumps({"error": "ragfs package not installed"})
+        return _package_missing_error()
 
     source_path = get_source_path(index)
     db_path = get_db_path(index)
@@ -1449,7 +1754,7 @@ async def ragfs_propose_organization(
         }, indent=2)
 
     except Exception as e:  # noqa: BLE001
-        return json.dumps({"error": str(e)})
+        return _client_error(e)
 
 
 @mcp.tool(
@@ -1483,7 +1788,7 @@ async def ragfs_propose_cleanup(index: str = "default") -> str:
     try:
         from ragfs import OrganizeRequest, OrganizeStrategy, RagfsSemanticManager
     except ImportError:
-        return json.dumps({"error": "ragfs package not installed"})
+        return _package_missing_error()
 
     source_path = get_source_path(index)
     db_path = get_db_path(index)
@@ -1526,7 +1831,7 @@ async def ragfs_propose_cleanup(index: str = "default") -> str:
         }, indent=2)
 
     except Exception as e:  # noqa: BLE001
-        return json.dumps({"error": str(e)})
+        return _client_error(e)
 
 
 @mcp.tool(
@@ -1557,7 +1862,7 @@ async def ragfs_list_pending_plans(index: str = "default") -> str:
     try:
         from ragfs import RagfsSemanticManager
     except ImportError:
-        return json.dumps({"error": "ragfs package not installed"})
+        return _package_missing_error()
 
     source_path = get_source_path(index)
     db_path = get_db_path(index)
@@ -1589,7 +1894,7 @@ async def ragfs_list_pending_plans(index: str = "default") -> str:
         }, indent=2)
 
     except Exception as e:  # noqa: BLE001
-        return json.dumps({"error": str(e)})
+        return _client_error(e)
 
 
 @mcp.tool(
@@ -1622,7 +1927,7 @@ async def ragfs_get_plan(
     try:
         from ragfs import RagfsSemanticManager
     except ImportError:
-        return json.dumps({"error": "ragfs package not installed"})
+        return _package_missing_error()
 
     source_path = get_source_path(index)
     db_path = get_db_path(index)
@@ -1638,7 +1943,7 @@ async def ragfs_get_plan(
         plan = await semantic.get_plan(plan_id)
 
         if plan is None:
-            return json.dumps({"error": f"Plan not found: {plan_id}"})
+            return _json_error(ErrorCode.PLAN_NOT_FOUND, "Plan not found")
 
         actions = []
         for action in plan.actions:
@@ -1660,7 +1965,7 @@ async def ragfs_get_plan(
         }, indent=2)
 
     except Exception as e:  # noqa: BLE001
-        return json.dumps({"error": str(e)})
+        return _client_error(e)
 
 
 @mcp.tool(
@@ -1700,7 +2005,7 @@ async def ragfs_approve_plan(
     try:
         from ragfs import RagfsSemanticManager
     except ImportError:
-        return json.dumps({"error": "ragfs package not installed"})
+        return _package_missing_error()
 
     source_path = get_source_path(index)
     db_path = get_db_path(index)
@@ -1725,7 +2030,7 @@ async def ragfs_approve_plan(
         }, indent=2)
 
     except Exception as e:  # noqa: BLE001
-        return json.dumps({"error": str(e)})
+        return _client_error(e)
 
 
 @mcp.tool(
@@ -1763,7 +2068,7 @@ async def ragfs_reject_plan(
     try:
         from ragfs import RagfsSemanticManager
     except ImportError:
-        return json.dumps({"error": "ragfs package not installed"})
+        return _package_missing_error()
 
     source_path = get_source_path(index)
     db_path = get_db_path(index)
@@ -1786,7 +2091,7 @@ async def ragfs_reject_plan(
         }, indent=2)
 
     except Exception as e:  # noqa: BLE001
-        return json.dumps({"error": str(e)})
+        return _client_error(e)
 
 
 # =============================================================================
@@ -1848,12 +2153,20 @@ async def ragfs_batch_operations(
         if denied:
             return denied
 
+    source_path = get_source_path(index)
+    for op in parsed:
+        for attr in ("source", "target"):
+            value = getattr(op, attr, None)
+            if isinstance(value, str) and value:
+                escaped = _ensure_under_source(source_path, value)
+                if escaped:
+                    return escaped
+
     try:
         from ragfs import Operation, RagfsOpsManager
     except ImportError:
-        return json.dumps({"error": "ragfs package not installed"})
+        return _package_missing_error()
 
-    source_path = get_source_path(index)
     db_path = get_db_path(index)
 
     try:
@@ -1876,7 +2189,10 @@ async def ragfs_batch_operations(
             elif isinstance(op, SymlinkOp):
                 op_obj = Operation.symlink(op.source, op.target)
             else:
-                return json.dumps({"error": f"Unknown action: {getattr(op, 'action', '')}"})
+                return _json_error(
+                    ErrorCode.INVALID_INPUT,
+                    f"Unknown action: {getattr(op, 'action', '')}",
+                )
 
             op_list.append(op_obj)
 
@@ -1885,24 +2201,35 @@ async def ragfs_batch_operations(
             return json.dumps({
                 "dry_run": True,
                 "valid": validation.is_valid,
-                "errors": validation.errors,
-                "warnings": validation.warnings,
+                "errors": [_sanitize_client_text(e) for e in validation.errors],
+                "warnings": [_sanitize_client_text(w) for w in validation.warnings],
             }, indent=2)
 
         result = await ops.batch(op_list, atomic=atomic)
 
         results = []
+        top_code: str | None = None
+        top_error: str | None = None
         for r in result.results:
+            err = r.error
+            if err:
+                code, message = classify_exception(RuntimeError(err))
+                if code != ErrorCode.INTERNAL:
+                    err = message
+                    top_code = top_code or code
+                    top_error = top_error or message
+                else:
+                    err = _sanitize_client_text(err)
             results.append({
                 "success": r.success,
                 "operation": r.operation,
                 "path": r.path,
                 "undo_id": r.undo_id,
-                "error": r.error,
+                "error": err,
             })
 
         batch_id = getattr(result, "rollback_id", None) or result.id
-        return json.dumps({
+        payload: dict[str, Any] = {
             "success": result.success,
             "atomic": atomic,
             "total_operations": len(results),
@@ -1911,10 +2238,14 @@ async def ragfs_batch_operations(
             "results": results,
             "rollback_id": batch_id,
             "hint": "Use ragfs_undo with rollback_id to undo the entire batch, or individual undo_ids for specific operations",
-        }, indent=2)
+        }
+        if not result.success and top_code:
+            payload["code"] = top_code
+            payload["error"] = top_error
+        return json.dumps(payload, indent=2)
 
     except Exception as e:  # noqa: BLE001
-        return json.dumps({"error": str(e)})
+        return _client_error(e)
 
 
 def create_server() -> MCPServer:
@@ -1922,6 +2253,7 @@ def create_server() -> MCPServer:
 
     This is the entry point used by MCP clients.
     """
+    configure_logging()
     build_allowed_roots()
     return mcp
 
@@ -1932,6 +2264,7 @@ async def main() -> None:
     This is used when running the server directly:
         python -m ragfs_mcp
     """
+    configure_logging()
     build_allowed_roots()
     await mcp.run_stdio_async()
 

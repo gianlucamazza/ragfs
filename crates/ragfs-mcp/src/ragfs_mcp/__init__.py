@@ -55,6 +55,8 @@ Configuration via environment variables:
         RAGFS_MCP_MAX_BATCH_OPS / RAGFS_MCP_MAX_OP_CONTENT_BYTES: input caps
     RAGFS_MCP_TIMEOUT_SECONDS / RAGFS_MCP_RATE_LIMIT / RAGFS_MCP_RATE_WINDOW_SECONDS:
         per-call timeout and per-process rate limit
+    RAGFS_MCP_LOG_LEVEL: Python logging level (default WARNING). Logs go to stderr.
+    RAGFS_MCP_AUDIT_LOG: Set to 0 to disable the per-call JSON audit line on stderr.
     RAGFS_DATA_DIR: Data root (default: ~/.local/share/ragfs). Indices live at
         {data}/indices/{blake3(canonical_source)[:16]}/index.lance
     RAGFS_DB_PATH: Optional override of the resolved LanceDB path

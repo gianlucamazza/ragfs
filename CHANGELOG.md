@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- MCP tool errors include a stable `code` (`INDEX_NOT_FOUND`, `PATH_OUTSIDE_ROOT`, `WRITES_DISABLED`, `LIMIT_EXCEEDED`, `TIMEOUT`, `RATE_LIMITED`, `INTERNAL`, …). Full exception detail is logged at debug on stderr only (issue #164 MCP-05).
+- MCP writes one structured JSON audit line per tool call to stderr (`timestamp`, `tool`, redacted `args`, `outcome`, `duration_ms`, `write`). Disable with `RAGFS_MCP_AUDIT_LOG=0`. Python log level is `RAGFS_MCP_LOG_LEVEL` (issue #164 MCP-06).
 - MCP `ToolAnnotations` (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`, and a UI `title`) on every `ragfs-mcp` tool (issue #164 MCP-01). Hints are not permissions.
 - `RAGFS_ALLOWED_ROOTS` and `RAGFS_MCP_ALLOW_WRITES` environment variables for the MCP server.
 - Accepted ADR-009: transparent memory benchmark harness for ragfs and
@@ -15,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   strict/lenient metrics). Design only; implementation follows in phased PRs.
 
 ### Changed
+- **Behaviour change:** MCP tool error payloads now include a `code` field. Client-visible `error` text no longer includes absolute host paths or raw exception internals (issue #164 MCP-05).
 - **Behaviour change:** MCP tools now reject over-limit inputs that previously ran unbounded (`limit`, query length, `max_groups`, batch operation count, and per-op `content` size). Each cap is overridable with a `RAGFS_MCP_*` env var. Every tool call also has a wall-clock timeout and a per-process rate limit.
 - **Behaviour change:** Mutating MCP tools now need `RAGFS_MCP_ALLOW_WRITES=1` (`ragfs_delete_to_trash`, `ragfs_restore_from_trash`, `ragfs_undo`, `ragfs_approve_plan`, `ragfs_reject_plan`, and `ragfs_batch_operations` when `dry_run` is false). Reads and dry runs are unchanged.
 - MCP jail roots are allowlisted from `RAGFS_SOURCE_PATH` and optional `RAGFS_ALLOWED_ROOTS` (`os.pathsep`-separated), each resolved with `realpath`. `index` must be an allowlisted root or the recorded source of a known index; hex index ids map to that recorded source and do not fall back to `RAGFS_SOURCE_PATH` or cwd.
@@ -23,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MCP batch operations construct the safety manager with the source tree as the jail and the index data dir for trash/history, so deletes can be undone. If soft-delete fails, the operation fails instead of permanently removing the file.
 
 ### Security
+- MCP tool responses no longer echo host paths or exception internals; each error has a stable code, and tool calls are audited on stderr (issue #164 MCP-05 / MCP-06).
 - MCP tools advertise accurate `ToolAnnotations` so clients can distinguish read vs write vs destructive operations (issue #164 MCP-01). Hints are not ACLs; writes still require `RAGFS_MCP_ALLOW_WRITES=1` and the root allowlist.
 - MCP tools reject unbounded `limit`, query length, `max_groups`, batch size, and per-op content, and apply a per-call timeout plus a per-process rate limit (issue #164 MCP-02 / MCP-07).
 - MCP `ragfs_similar` resolves `file_path` with `realpath` (symlinks included) and rejects paths outside the allowlisted roots (`RAGFS_SOURCE_PATH` plus `RAGFS_ALLOWED_ROOTS`). The error does not echo the resolved absolute path.
