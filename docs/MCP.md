@@ -353,10 +353,9 @@ Undo a previous operation by its ID.
 **Error Response (operation not undoable):**
 ```json
 {
-  "success": false,
-  "error": "Operation is not reversible",
-  "undo_id": "op_xyz789",
-  "hint": "Only delete, move, copy, and create operations can be undone"
+  "error": "Operation cannot be undone (not reversible or already undone)",
+  "code": "NOT_REVERSIBLE",
+  "success": false
 }
 ```
 
@@ -554,23 +553,15 @@ Get full details of a plan including all proposed actions.
       "reason": "Group with related API documentation",
       "confidence": 0.82
     }
-  ],
-  "impact_summary": {
-    "files_affected": 4,
-    "directories_created": 1,
-    "moves": 3,
-    "deletes": 0
-  }
+  ]
 }
 ```
 
 **Error Response (plan not found):**
 ```json
 {
-  "success": false,
   "error": "Plan not found",
-  "plan_id": "plan_invalid",
-  "hint": "Use ragfs_list_pending_plans to see available plans"
+  "code": "PLAN_NOT_FOUND"
 }
 ```
 
