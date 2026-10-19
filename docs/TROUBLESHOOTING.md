@@ -352,23 +352,27 @@ ImportError: No module named 'ragfs'
 Error: Failed to connect to MCP server
 ```
 
+The MCP server is **stdio only**. There is no `ragfs mcp` subcommand, no HTTP listener, and no `:8080` port. `RAGFS_MCP_HOST` / `RAGFS_MCP_PORT` are not used.
+
 **Solutions:**
 
-1. **Start the MCP server:**
+1. **Let the MCP client spawn the process** (Claude Desktop and other stdio clients do this). The command is:
    ```bash
-   ragfs mcp serve
+   ragfs-mcp
+   # or
+   python -m ragfs_mcp
    ```
 
-2. **Check port availability:**
+2. **Point the client at stdio, not a URL.** Config should use `command` (`ragfs-mcp` or `python` with `args: ["-m", "ragfs_mcp"]`). Do not set `url`, `RAGFS_MCP_HOST`, or `RAGFS_MCP_PORT`.
+
+3. **Confirm `ragfs-mcp` is on PATH** and that `ragfs-python` plus `ragfs-mcp` are installed from this repo (not PyPI).
+
+4. **Logs are on stderr.** `RUST_LOG` does not apply to this Python process:
    ```bash
-   lsof -i :8080  # Default MCP port
+   RAGFS_MCP_LOG_LEVEL=DEBUG ragfs-mcp
    ```
 
-3. **Check environment variables:**
-   ```bash
-   export RAGFS_MCP_HOST=localhost
-   export RAGFS_MCP_PORT=8080
-   ```
+See [MCP.md — Security model](MCP.md#security-model).
 
 ---
 

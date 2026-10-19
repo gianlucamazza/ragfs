@@ -31,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MCP tools reject unbounded `limit`, query length, `max_groups`, batch size, and per-op content, and apply a per-call timeout plus a per-process rate limit (issue #164 MCP-02 / MCP-07).
 - MCP `ragfs_similar` resolves `file_path` with `realpath` (symlinks included) and rejects paths outside the allowlisted roots (`RAGFS_SOURCE_PATH` plus `RAGFS_ALLOWED_ROOTS`). The error does not echo the resolved absolute path.
 
+### Documentation
+- MCP is stdio-only: drop `ragfs mcp serve`, `:8080`, and “any transport”. `docs/MCP.md` has a Security model section (allowlist, opt-in writes, caps/timeout/rate limit, annotations as hints, error codes, stderr audit log) and documents that `ragfs_approve_plan` fails closed because the Python semantic manager has no `OpsManager` (issue #164 MCP-09 / MCP-10).
+
 ## [0.2.1] - 2026-10-10
 
 ### Security

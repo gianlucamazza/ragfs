@@ -30,12 +30,14 @@ pip install 'git+https://github.com/gianlucamazza/ragfs#subdirectory=crates/ragf
 ### Running the Server
 
 ```bash
-# Run directly
+# Run directly (stdio)
 python -m ragfs_mcp
 
-# Or use the CLI command
+# Or use the CLI command (stdio)
 ragfs-mcp
 ```
+
+Shipped entry points use **stdio only**. There is no `ragfs mcp serve` command, no HTTP/SSE listener, and no `:8080` port. See [Security model](#security-model).
 
 ### Claude Desktop Configuration
 
@@ -417,11 +419,11 @@ Analyze files for potential cleanup (duplicates, stale, temp files).
 
 ## Approval Workflow Tools
 
-These tools implement the **Propose-Review-Apply** pattern for safe AI agent operations.
+These tools implement the **Propose-Review-Apply** pattern. Propose, list, get, and reject persist or discard plans. **Apply is not implemented on MCP today:** `ragfs_approve_plan` fails closed (see below).
 
 ### ragfs_propose_organization
 
-Create an organization plan (NOT executed until approved).
+Create an organization plan (not executed). Approval is a separate step; on MCP, `ragfs_approve_plan` currently fails closed.
 
 **Parameters:**
 | Parameter | Type | Default | Description |
@@ -455,7 +457,7 @@ Create an organization plan (NOT executed until approved).
 
 ### ragfs_propose_cleanup
 
-Create a cleanup plan for redundant/stale files (NOT executed until approved).
+Create a cleanup plan for redundant/stale files (not executed). Approval is a separate step; on MCP, `ragfs_approve_plan` currently fails closed.
 
 The tool takes only `index`. It always analyzes the source root (`scope="./"`) and does not accept `scope`, `include_duplicates`, `include_stale`, or `stale_days`.
 
@@ -574,7 +576,11 @@ Get full details of a plan including all proposed actions.
 
 ### ragfs_approve_plan
 
-Approve and execute a plan. All actions become reversible.
+Intended to approve and execute a pending plan. **This tool currently fails closed and does not execute plan actions.**
+
+`RagfsSemanticManager.init` constructs the FUSE `SemanticManager` without an `OpsManager` (`ops_manager: None`). `approve_plan` then returns `OpsManager not configured - cannot execute plan actions`. The MCP tool maps that to a client error. No files are moved or deleted.
+
+The tool is still write-gated (`RAGFS_MCP_ALLOW_WRITES=1`) and path-jailed. Propose / list / get / reject work. Wiring an `OpsManager` later must reuse those same server-side gates; do not treat this fail-closed path as a security control.
 
 **Parameters:**
 | Parameter | Type | Default | Description |
@@ -582,15 +588,11 @@ Approve and execute a plan. All actions become reversible.
 | `plan_id` | string | required | The plan ID to approve |
 | `index` | string | source path | Source directory or 16-hex id |
 
-**Response:**
+**Response (current):**
 ```json
 {
-  "success": true,
-  "plan_id": "plan_abc123",
-  "status": "completed",
-  "message": "Plan executed successfully",
-  "action_count": 5,
-  "hint": "All actions are reversible. Use ragfs_get_history to see undo IDs."
+  "error": "Internal error",
+  "code": "INTERNAL"
 }
 ```
 
@@ -707,6 +709,21 @@ Pass the **source directory** (or the 16-hex id from `ragfs_list_indices`) as `i
 
 ---
 
+## Security model
+
+The shipped server is **stdio only** (`python -m ragfs_mcp` / `ragfs-mcp` → `mcp.run_stdio_async()`). There is no Streamable HTTP or SSE listener in this package. `RAGFS_MCP_HOST` and `RAGFS_MCP_PORT` are unused. The process is same-privilege as the MCP client; configuration comes from the environment.
+
+- **Root allowlist.** Jail roots are `RAGFS_SOURCE_PATH` plus optional `RAGFS_ALLOWED_ROOTS` (`os.pathsep`-separated), each resolved with `realpath`. `index` and `ragfs_similar.file_path` must land inside those roots (hex ids use the recorded source sidecar). See Quick Start above.
+- **Writes are opt-in.** Mutating tools stay disabled until `RAGFS_MCP_ALLOW_WRITES=1`. Reads and `dry_run` batch calls work without it.
+- **Caps, timeout, and rate limit.** Query length, result `limit`, batch size, per-op content, wall-clock timeout, and per-process rate limit are enforced. See the [environment variables](#environment-variables) table (`RAGFS_MCP_MAX_*`, `RAGFS_MCP_TIMEOUT_SECONDS`, `RAGFS_MCP_RATE_LIMIT`).
+- **Annotations are hints, not permissions.** `readOnlyHint` / `destructiveHint` / `idempotentHint` are for client UX. Authorization is the write gate and the allowlist.
+- **Error codes.** Client-visible errors use a stable `code` plus a short `error` message. They never include absolute host paths or exception internals. Codes include `INDEX_NOT_FOUND`, `PATH_OUTSIDE_ROOT`, `WRITES_DISABLED`, `LIMIT_EXCEEDED`, `TIMEOUT`, `RATE_LIMITED`, and `INTERNAL`.
+- **Stderr audit log.** Each tool call writes one JSON line to **stderr** (stdout is the MCP channel) unless `RAGFS_MCP_AUDIT_LOG=0`. See [Debugging](#debugging).
+
+Any future HTTP transport must bind **localhost by default**, validate `Origin` / `Host` (DNS-rebinding), and follow the MCP [Authorization](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization) specification. See also [Transports](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports) (Streamable HTTP security warning) and [Security Best Practices](https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices).
+
+---
+
 ## Usage Examples
 
 ### With Claude Desktop
@@ -723,10 +740,8 @@ Once configured, you can ask Claude to:
 ```python
 from ragfs_mcp import create_server
 
-# Create server instance
+# Shipped entry points use stdio only. Do not start FastMCP HTTP/SSE helpers.
 server = create_server()
-
-# The server can be run with any MCP-compatible transport
 await server.run_stdio_async()
 ```
 
@@ -768,10 +783,12 @@ The embedding model (~100MB) is downloaded on first use. Ensure you have interne
 
 ### Connection Issues
 
+The client **spawns** `ragfs-mcp` over stdio; there is nothing listening on a port.
+
 Check that:
-1. The MCP server is running
-2. Claude Desktop configuration is correct
-3. The `ragfs-mcp` command is in your PATH
+1. Claude Desktop (or other stdio client) config uses `command`, not a URL
+2. The `ragfs-mcp` command is in your PATH
+3. `ragfs-python` and `ragfs-mcp` are installed from this repo
 
 ### Debugging
 
@@ -807,6 +824,8 @@ from ragfs_mcp import create_server
 
 server = create_server()  # MCPServer on mcp 2.x, FastMCP on mcp 1.x
 ```
+
+This package only runs **stdio**. `create_server()` returns the raw FastMCP / MCPServer object; do not call its HTTP or SSE helpers. A future HTTP transport would need localhost bind, Origin/Host validation, and the MCP Authorization spec — see [Security model](#security-model).
 
 ### main()
 
