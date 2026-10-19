@@ -41,15 +41,20 @@ Tools exposed:
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import json
 import os
 import re
 import sys
+import time
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, Literal
 
 import blake3
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 try:
     from mcp.server.mcpserver import MCPServer
@@ -77,6 +82,17 @@ FILE_PATH_NOT_ALLOWED_ERROR = "file_path is outside allowed roots"
 WRITES_DISABLED_ERROR = (
     "Mutating MCP tools are disabled. Set RAGFS_MCP_ALLOW_WRITES=1 to enable writes."
 )
+
+# Caps (env-overridable). Defaults stay conservative and match existing CLI / MCP
+# behavior rather than inventing new magnitudes.
+DEFAULT_MAX_LIMIT = 100  # CLI `[query].max_limit` in crates/ragfs/src/config.rs
+DEFAULT_MAX_QUERY_LENGTH = 2000  # ragfs_similar already embeds the first 2000 chars
+DEFAULT_MAX_GROUPS = 10  # FUSE OrganizeRequest default_max_groups
+DEFAULT_MAX_BATCH_OPS = 10  # docs/tests use 1–3 ops; 10 is a small agent-turn ceiling
+DEFAULT_MAX_OP_CONTENT_BYTES = 1_048_576  # 1 MiB; index max_file_size is 50MB
+DEFAULT_TIMEOUT_SECONDS = 30.0  # local gte-small search is seconds, not minutes
+DEFAULT_RATE_LIMIT = 30  # stdio, one client; 30 calls / window stops embed loops
+DEFAULT_RATE_WINDOW_SECONDS = 60.0
 
 
 class IndexNotAllowedError(ValueError):
@@ -253,7 +269,261 @@ def _json_error(message: str) -> str:
     return json.dumps({"error": message})
 
 
+def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw, 10)
+    except ValueError:
+        return default
+    return max(minimum, value)
+
+
+def _env_float(name: str, default: float, *, minimum: float = 0.0) -> float:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return max(minimum, value)
+
+
+def max_limit() -> int:
+    return _env_int("RAGFS_MCP_MAX_LIMIT", DEFAULT_MAX_LIMIT)
+
+
+def max_query_length() -> int:
+    return _env_int("RAGFS_MCP_MAX_QUERY_LENGTH", DEFAULT_MAX_QUERY_LENGTH)
+
+
+def max_groups() -> int:
+    return _env_int("RAGFS_MCP_MAX_GROUPS", DEFAULT_MAX_GROUPS)
+
+
+def max_batch_ops() -> int:
+    return _env_int("RAGFS_MCP_MAX_BATCH_OPS", DEFAULT_MAX_BATCH_OPS)
+
+
+def max_op_content_bytes() -> int:
+    return _env_int("RAGFS_MCP_MAX_OP_CONTENT_BYTES", DEFAULT_MAX_OP_CONTENT_BYTES)
+
+
+def timeout_seconds() -> float:
+    return _env_float("RAGFS_MCP_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS)
+
+
+def rate_limit() -> int:
+    return _env_int("RAGFS_MCP_RATE_LIMIT", DEFAULT_RATE_LIMIT, minimum=0)
+
+
+def rate_window_seconds() -> float:
+    return _env_float("RAGFS_MCP_RATE_WINDOW_SECONDS", DEFAULT_RATE_WINDOW_SECONDS)
+
+
+class _RateLimiter:
+    def __init__(self) -> None:
+        self._calls: list[float] = []
+
+    def reset(self) -> None:
+        self._calls.clear()
+
+    def check(self) -> str | None:
+        allowed = rate_limit()
+        if allowed <= 0:
+            return None
+        window = rate_window_seconds()
+        now = time.monotonic()
+        self._calls = [t for t in self._calls if now - t < window]
+        if len(self._calls) >= allowed:
+            return _json_error(
+                f"Rate limit exceeded: {allowed} calls per {window:g} seconds"
+            )
+        self._calls.append(now)
+        return None
+
+
+_RATE_LIMITER = _RateLimiter()
+
+
+def reset_rate_limiter() -> None:
+    """Clear the per-process tool-call window (tests)."""
+    _RATE_LIMITER.reset()
+
+
+async def _await_with_timeout(coro: Awaitable[str]) -> str:
+    timeout = timeout_seconds()
+    try:
+        if timeout <= 0:
+            return await coro
+        return await asyncio.wait_for(coro, timeout=timeout)
+    except asyncio.TimeoutError:
+        return _json_error(f"Tool call timed out after {timeout} seconds")
+
+
+async def run_limited(coro: Awaitable[str]) -> str:
+    """Apply the per-process rate limit and wall-clock timeout to one call."""
+    limited = _RATE_LIMITER.check()
+    if limited:
+        close = getattr(coro, "close", None)
+        if callable(close):
+            close()
+        return limited
+    return await _await_with_timeout(coro)
+
+
+def with_limits(func: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str]]:
+    """Wrap a tool so every invocation is rate-limited and time-bounded."""
+
+    @functools.wraps(func)
+    async def wrapper(*args: Any, **kwargs: Any) -> str:
+        limited = _RATE_LIMITER.check()
+        if limited:
+            return limited
+        return await _await_with_timeout(func(*args, **kwargs))
+
+    return wrapper
+
+
+def _validate_limit(limit: int) -> str | None:
+    if limit < 1:
+        return _json_error("limit must be >= 1")
+    cap = max_limit()
+    if limit > cap:
+        return _json_error(f"limit {limit} exceeds maximum of {cap}")
+    return None
+
+
+def _validate_query(query: str) -> str | None:
+    cap = max_query_length()
+    if len(query) > cap:
+        return _json_error(f"query exceeds maximum length of {cap}")
+    return None
+
+
+def _validate_max_groups(value: int) -> str | None:
+    if value < 1:
+        return _json_error("max_groups must be >= 1")
+    cap = max_groups()
+    if value > cap:
+        return _json_error(f"max_groups {value} exceeds maximum of {cap}")
+    return None
+
+
+def _validate_threshold(name: str, value: float) -> str | None:
+    if value < 0.0 or value > 1.0:
+        return _json_error(f"{name} must be between 0 and 1")
+    return None
+
+
+class _OpBase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class CreateOp(_OpBase):
+    action: Literal["create"]
+    target: str
+    content: str = ""
+
+
+class WriteOp(_OpBase):
+    action: Literal["write"]
+    target: str
+    content: str = ""
+    append: bool = False
+
+
+class MoveOp(_OpBase):
+    action: Literal["move"]
+    source: str
+    target: str
+
+
+class CopyOp(_OpBase):
+    action: Literal["copy"]
+    source: str
+    target: str
+
+
+class DeleteOp(_OpBase):
+    action: Literal["delete"]
+    target: str
+
+
+class MkdirOp(_OpBase):
+    action: Literal["mkdir"]
+    target: str
+
+
+class SymlinkOp(_OpBase):
+    action: Literal["symlink"]
+    source: str
+    target: str
+
+
+BatchOperation = Annotated[
+    CreateOp | MoveOp | CopyOp | DeleteOp | MkdirOp | WriteOp | SymlinkOp,
+    Field(discriminator="action"),
+]
+
+_ACTION_MODELS: dict[str, type[_OpBase]] = {
+    "create": CreateOp,
+    "move": MoveOp,
+    "copy": CopyOp,
+    "delete": DeleteOp,
+    "mkdir": MkdirOp,
+    "write": WriteOp,
+    "symlink": SymlinkOp,
+}
+
+
+def _batch_validation_message(action: str, exc: ValidationError) -> str:
+    for err in exc.errors():
+        loc = err.get("loc") or ()
+        if err.get("type") == "missing":
+            field = loc[-1] if loc else "field"
+            return f"missing required field: {field}"
+    return f"Invalid {action} operation: {exc}"
+
+
+def parse_batch_operations(
+    operations: list[Any],
+) -> tuple[list[BatchOperation] | None, str | None]:
+    cap = max_batch_ops()
+    if len(operations) > cap:
+        return None, _json_error(f"batch exceeds maximum of {cap} operations")
+    content_cap = max_op_content_bytes()
+    parsed: list[BatchOperation] = []
+    for i, op in enumerate(operations):
+        if isinstance(op, _OpBase):
+            data = op.model_dump()
+        elif isinstance(op, dict):
+            data = op
+        else:
+            return None, _json_error(f"operations[{i}] must be an object")
+        action = data.get("action", "")
+        model_cls = _ACTION_MODELS.get(action)
+        if model_cls is None:
+            return None, _json_error(f"Unknown action: {action}")
+        try:
+            model = model_cls.model_validate(data)
+        except ValidationError as exc:
+            return None, _json_error(_batch_validation_message(action, exc))
+        content = getattr(model, "content", None)
+        if isinstance(content, str):
+            size = len(content.encode("utf-8"))
+            if size > content_cap:
+                return None, _json_error(
+                    f"operation content exceeds maximum of {content_cap} bytes"
+                )
+        parsed.append(model)
+    return parsed, None
+
+
 @mcp.tool()
+@with_limits
 async def ragfs_search(
     query: str,
     index: str = "default",
@@ -270,11 +540,16 @@ async def ragfs_search(
         index: Source directory (same path as `ragfs index`) or 16-hex index id.
             Defaults to RAGFS_SOURCE_PATH or the current working directory.
         limit: Maximum number of results to return (default: 10).
+            Values outside 1..RAGFS_MCP_MAX_LIMIT are rejected (not clamped).
         hybrid: Enable hybrid search combining vector and full-text (default: True).
 
     Returns:
         JSON string with search results including file paths, content snippets, and scores.
     """
+    invalid = _validate_query(query) or _validate_limit(limit)
+    if invalid:
+        return invalid
+
     try:
         from ragfs import RagfsRetriever
     except ImportError:
@@ -322,6 +597,7 @@ async def ragfs_search(
 
 
 @mcp.tool()
+@with_limits
 async def ragfs_index_status(index: str = "default") -> str:
     """Get the status of an index.
 
@@ -375,6 +651,7 @@ async def ragfs_index_status(index: str = "default") -> str:
 
 
 @mcp.tool()
+@with_limits
 async def ragfs_similar(
     file_path: str,
     index: str = "default",
@@ -391,11 +668,16 @@ async def ragfs_similar(
         index: Source directory (same path as `ragfs index`) or 16-hex index id.
             Defaults to RAGFS_SOURCE_PATH or the current working directory.
         limit: Maximum number of similar files to return (default: 5).
+            Values outside 1..RAGFS_MCP_MAX_LIMIT are rejected (not clamped).
 
     Returns:
         JSON string with similar files and their similarity scores.
     """
     import json
+
+    invalid = _validate_limit(limit)
+    if invalid:
+        return invalid
 
     try:
         source_resolved = resolve_file_under_allowed_roots(file_path)
@@ -464,6 +746,7 @@ async def ragfs_similar(
 
 
 @mcp.tool()
+@with_limits
 async def ragfs_list_indices() -> str:
     """List all available RAGFS indices.
 
@@ -559,6 +842,7 @@ def _deny_writes() -> str | None:
 
 
 @mcp.tool()
+@with_limits
 async def ragfs_delete_to_trash(
     path: str,
     index: str = "default",
@@ -611,6 +895,7 @@ async def ragfs_delete_to_trash(
 
 
 @mcp.tool()
+@with_limits
 async def ragfs_list_trash(index: str = "default") -> str:
     """List all files in trash that can be restored.
 
@@ -659,6 +944,7 @@ async def ragfs_list_trash(index: str = "default") -> str:
 
 
 @mcp.tool()
+@with_limits
 async def ragfs_restore_from_trash(
     undo_id: str,
     index: str = "default",
@@ -705,6 +991,7 @@ async def ragfs_restore_from_trash(
 
 
 @mcp.tool()
+@with_limits
 async def ragfs_get_history(
     limit: int = 50,
     path: str | None = None,
@@ -716,6 +1003,7 @@ async def ragfs_get_history(
 
     Args:
         limit: Maximum number of entries to return (default: 50).
+            Values outside 1..RAGFS_MCP_MAX_LIMIT are rejected (not clamped).
         path: Optional filter by file path.
         index: Source directory (same path as `ragfs index`) or 16-hex index id.
             Defaults to RAGFS_SOURCE_PATH or the current working directory.
@@ -723,6 +1011,10 @@ async def ragfs_get_history(
     Returns:
         JSON with operation history entries.
     """
+    invalid = _validate_limit(limit)
+    if invalid:
+        return invalid
+
     err = _resolve_source(index)
     if err:
         return err
@@ -764,6 +1056,7 @@ async def ragfs_get_history(
 
 
 @mcp.tool()
+@with_limits
 async def ragfs_undo(
     undo_id: str,
     index: str = "default",
@@ -822,6 +1115,7 @@ async def ragfs_undo(
 
 
 @mcp.tool()
+@with_limits
 async def ragfs_find_duplicates(
     threshold: float = 0.95,
     index: str = "default",
@@ -839,6 +1133,10 @@ async def ragfs_find_duplicates(
     Returns:
         JSON with duplicate groups and potential savings.
     """
+    invalid = _validate_threshold("threshold", threshold)
+    if invalid:
+        return invalid
+
     err = _resolve_source(index)
     if err:
         return err
@@ -883,6 +1181,7 @@ async def ragfs_find_duplicates(
 
 
 @mcp.tool()
+@with_limits
 async def ragfs_analyze_cleanup(index: str = "default") -> str:
     """Analyze files for potential cleanup.
 
@@ -947,6 +1246,7 @@ async def ragfs_analyze_cleanup(index: str = "default") -> str:
 
 
 @mcp.tool()
+@with_limits
 async def ragfs_propose_organization(
     scope: str,
     strategy: str = "by_topic",
@@ -968,6 +1268,7 @@ async def ragfs_propose_organization(
         scope: Directory scope to organize (relative to source root).
         strategy: Organization strategy (default: "by_topic").
         max_groups: Maximum number of groups to create (default: 10).
+            Values above RAGFS_MCP_MAX_GROUPS are rejected.
         similarity_threshold: Minimum similarity for grouping (0.0-1.0).
         index: Source directory (same path as `ragfs index`) or 16-hex index id.
             Defaults to RAGFS_SOURCE_PATH or the current working directory.
@@ -975,6 +1276,12 @@ async def ragfs_propose_organization(
     Returns:
         JSON with plan_id and proposed actions for review.
     """
+    invalid = _validate_max_groups(max_groups) or _validate_threshold(
+        "similarity_threshold", similarity_threshold
+    )
+    if invalid:
+        return invalid
+
     err = _resolve_source(index)
     if err:
         return err
@@ -1039,6 +1346,7 @@ async def ragfs_propose_organization(
 
 
 @mcp.tool()
+@with_limits
 async def ragfs_propose_cleanup(index: str = "default") -> str:
     """Create a cleanup plan for redundant/stale files (NOT executed until approved).
 
@@ -1108,6 +1416,7 @@ async def ragfs_propose_cleanup(index: str = "default") -> str:
 
 
 @mcp.tool()
+@with_limits
 async def ragfs_list_pending_plans(index: str = "default") -> str:
     """List all pending plans awaiting approval.
 
@@ -1163,6 +1472,7 @@ async def ragfs_list_pending_plans(index: str = "default") -> str:
 
 
 @mcp.tool()
+@with_limits
 async def ragfs_get_plan(
     plan_id: str,
     index: str = "default",
@@ -1226,6 +1536,7 @@ async def ragfs_get_plan(
 
 
 @mcp.tool()
+@with_limits
 async def ragfs_approve_plan(
     plan_id: str,
     index: str = "default",
@@ -1283,6 +1594,7 @@ async def ragfs_approve_plan(
 
 
 @mcp.tool()
+@with_limits
 async def ragfs_reject_plan(
     plan_id: str,
     index: str = "default",
@@ -1341,8 +1653,9 @@ async def ragfs_reject_plan(
 
 
 @mcp.tool()
+@with_limits
 async def ragfs_batch_operations(
-    operations: list[dict[str, Any]],
+    operations: list[BatchOperation],
     atomic: bool = True,
     dry_run: bool = False,
     index: str = "default",
@@ -1362,7 +1675,9 @@ async def ragfs_batch_operations(
     ]
 
     Args:
-        operations: List of operation objects with action, source, target, content.
+        operations: List of typed operation objects (create/move/copy/delete/mkdir/write/symlink).
+            Count is capped by RAGFS_MCP_MAX_BATCH_OPS; per-op content by
+            RAGFS_MCP_MAX_OP_CONTENT_BYTES. Over-limit values are rejected.
         atomic: If True, rollback all on any failure (default: True).
         dry_run: If True, validate without executing (default: False).
         index: Source directory (same path as `ragfs index`) or 16-hex index id.
@@ -1371,6 +1686,11 @@ async def ragfs_batch_operations(
     Returns:
         JSON with batch result and undo IDs.
     """
+    parsed, parse_err = parse_batch_operations(operations)
+    if parse_err:
+        return parse_err
+    assert parsed is not None
+
     err = _resolve_source(index)
     if err:
         return err
@@ -1378,12 +1698,6 @@ async def ragfs_batch_operations(
         denied = _deny_writes()
         if denied:
             return denied
-
-    known_actions = {"create", "move", "copy", "delete", "mkdir", "write", "symlink"}
-    for op in operations:
-        action = op.get("action", "")
-        if action not in known_actions:
-            return json.dumps({"error": f"Unknown action: {action}"})
 
     try:
         from ragfs import Operation, RagfsOpsManager
@@ -1396,32 +1710,24 @@ async def ragfs_batch_operations(
     try:
         ops = RagfsOpsManager(source_path, db_path)
 
-        # Convert dict operations to Operation objects
         op_list = []
-        for op in operations:
-            action = op.get("action", "")
-            source = op.get("source")
-            target = op.get("target", "")
-            content = op.get("content")
-
-            # Create Operation based on action type
-            if action == "create":
-                op_obj = Operation.create(target, content or "")
-            elif action == "move":
-                op_obj = Operation.move(source or "", target)
-            elif action == "copy":
-                op_obj = Operation.copy(source or "", target)
-            elif action == "delete":
-                op_obj = Operation.delete(target)
-            elif action == "mkdir":
-                op_obj = Operation.mkdir(target)
-            elif action == "write":
-                append = op.get("append", False)
-                op_obj = Operation.write(target, content or "", append)
-            elif action == "symlink":
-                op_obj = Operation.symlink(source or "", target)
+        for op in parsed:
+            if isinstance(op, CreateOp):
+                op_obj = Operation.create(op.target, op.content)
+            elif isinstance(op, MoveOp):
+                op_obj = Operation.move(op.source, op.target)
+            elif isinstance(op, CopyOp):
+                op_obj = Operation.copy(op.source, op.target)
+            elif isinstance(op, DeleteOp):
+                op_obj = Operation.delete(op.target)
+            elif isinstance(op, MkdirOp):
+                op_obj = Operation.mkdir(op.target)
+            elif isinstance(op, WriteOp):
+                op_obj = Operation.write(op.target, op.content, op.append)
+            elif isinstance(op, SymlinkOp):
+                op_obj = Operation.symlink(op.source, op.target)
             else:
-                return json.dumps({"error": f"Unknown action: {action}"})
+                return json.dumps({"error": f"Unknown action: {getattr(op, 'action', '')}"})
 
             op_list.append(op_obj)
 

@@ -51,6 +51,10 @@ Configuration via environment variables:
         Also the default allowlisted jail root for mutating tools.
     RAGFS_ALLOWED_ROOTS: Optional extra jail roots (os.pathsep-separated), resolved with realpath
     RAGFS_MCP_ALLOW_WRITES: Set to 1 to enable mutating tools (delete, restore, undo, approve, batch)
+    RAGFS_MCP_MAX_LIMIT / RAGFS_MCP_MAX_QUERY_LENGTH / RAGFS_MCP_MAX_GROUPS /
+        RAGFS_MCP_MAX_BATCH_OPS / RAGFS_MCP_MAX_OP_CONTENT_BYTES: input caps
+    RAGFS_MCP_TIMEOUT_SECONDS / RAGFS_MCP_RATE_LIMIT / RAGFS_MCP_RATE_WINDOW_SECONDS:
+        per-call timeout and per-process rate limit
     RAGFS_DATA_DIR: Data root (default: ~/.local/share/ragfs). Indices live at
         {data}/indices/{blake3(canonical_source)[:16]}/index.lance
     RAGFS_DB_PATH: Optional override of the resolved LanceDB path

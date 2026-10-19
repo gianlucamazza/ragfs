@@ -99,9 +99,9 @@ Perform semantic search in indexed files.
 **Parameters:**
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `query` | string | required | Natural language search query |
+| `query` | string | required | Natural language search query (max `RAGFS_MCP_MAX_QUERY_LENGTH`, default 2000). Longer values are rejected. |
 | `index` | string | source path | Source directory (`ragfs index <path>`) or 16-hex id. Default: `RAGFS_SOURCE_PATH` or cwd |
-| `limit` | integer | 10 | Maximum results to return |
+| `limit` | integer | 10 | Maximum results to return (`1`–`RAGFS_MCP_MAX_LIMIT`, default max 100). Out-of-range values are rejected, not clamped. |
 | `hybrid` | boolean | true | Enable hybrid search (vector + full-text) |
 
 **Example:**
@@ -157,7 +157,7 @@ Find files similar to a given file.
 |-----------|------|---------|-------------|
 | `file_path` | string | required | Path to the source file. Must resolve (`realpath`, including symlinks) inside an allowlisted root (`RAGFS_SOURCE_PATH` or `RAGFS_ALLOWED_ROOTS`). |
 | `index` | string | source path | Source directory or 16-hex id. Default: `RAGFS_SOURCE_PATH` or cwd |
-| `limit` | integer | 5 | Maximum similar files to return |
+| `limit` | integer | 5 | Maximum similar files to return (`1`–`RAGFS_MCP_MAX_LIMIT`, default max 100). Out-of-range values are rejected. |
 
 **Response:**
 ```json
@@ -277,7 +277,7 @@ Get operation history for audit trail.
 **Parameters:**
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `limit` | integer | 50 | Maximum entries to return |
+| `limit` | integer | 50 | Maximum entries to return (`1`–`RAGFS_MCP_MAX_LIMIT`, default max 100). Out-of-range values are rejected. |
 | `path` | string | null | Filter by file path |
 | `index` | string | source path | Source directory or 16-hex id |
 
@@ -343,7 +343,7 @@ Find duplicate or near-duplicate files using semantic embeddings.
 **Parameters:**
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `threshold` | float | 0.95 | Similarity threshold (0.0-1.0) |
+| `threshold` | float | 0.95 | Similarity threshold (`0.0`–`1.0`). Values outside the range are rejected. |
 | `index` | string | source path | Source directory or 16-hex id |
 
 **Response:**
@@ -400,8 +400,8 @@ Create an organization plan (NOT executed until approved).
 |-----------|------|---------|-------------|
 | `scope` | string | required | Directory scope to organize |
 | `strategy` | string | "by_topic" | Strategy: "by_topic", "by_type", "by_project" |
-| `max_groups` | integer | 10 | Maximum groups to create |
-| `similarity_threshold` | float | 0.7 | Minimum similarity for grouping |
+| `max_groups` | integer | 10 | Maximum groups to create (`1`–`RAGFS_MCP_MAX_GROUPS`, default max 10). Out-of-range values are rejected. |
+| `similarity_threshold` | float | 0.7 | Minimum similarity for grouping (`0.0`–`1.0`). Values outside the range are rejected. |
 | `index` | string | source path | Source directory or 16-hex id |
 
 **Response:**
@@ -429,14 +429,12 @@ Create an organization plan (NOT executed until approved).
 
 Create a cleanup plan for redundant/stale files (NOT executed until approved).
 
+The tool takes only `index`. It always analyzes the source root (`scope="./"`) and does not accept `scope`, `include_duplicates`, `include_stale`, or `stale_days`.
+
 **Parameters:**
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `scope` | string | "/" | Directory scope to analyze |
-| `include_duplicates` | boolean | true | Include duplicate files |
-| `include_stale` | boolean | true | Include stale files |
-| `stale_days` | integer | 90 | Days to consider a file stale |
-| `index` | string | source path | Source directory or 16-hex id |
+| `index` | string | source path | Source directory or 16-hex id. Default: `RAGFS_SOURCE_PATH` or cwd |
 
 **Response:**
 ```json
@@ -601,7 +599,7 @@ Execute multiple file operations atomically.
 **Parameters:**
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `operations` | array | required | List of operations |
+| `operations` | array | required | Typed operations (`create` / `move` / `copy` / `delete` / `mkdir` / `write` / `symlink`). Max `RAGFS_MCP_MAX_BATCH_OPS` (default 10). Per-op `content` max `RAGFS_MCP_MAX_OP_CONTENT_BYTES` (default 1 MiB). Over-limit input is rejected. Unknown actions and missing required fields are rejected. |
 | `atomic` | boolean | true | Rollback all on failure |
 | `dry_run` | boolean | false | Validate without executing |
 | `index` | string | source path | Source directory or 16-hex id |
@@ -665,6 +663,14 @@ Pass the **source directory** (or the 16-hex id from `ragfs_list_indices`) as `i
 | `RAGFS_SOURCE_PATH` | *(unset)* | Default source directory to hash (must match `ragfs index <path>`). Also the default allowlisted jail root. |
 | `RAGFS_ALLOWED_ROOTS` | *(unset)* | Extra allowlisted jail roots, `os.pathsep`-separated, each resolved with `realpath`. |
 | `RAGFS_MCP_ALLOW_WRITES` | *(unset)* | Set to `1` to enable mutating tools. Reads and `dry_run` batch calls work without it. |
+| `RAGFS_MCP_MAX_LIMIT` | `100` | Max `limit` for search, similar, and history. Matches CLI `[query].max_limit`. Over-limit values are rejected. |
+| `RAGFS_MCP_MAX_QUERY_LENGTH` | `2000` | Max `ragfs_search` query length. Same bound `ragfs_similar` already uses when embedding file text. |
+| `RAGFS_MCP_MAX_GROUPS` | `10` | Max `max_groups` for `ragfs_propose_organization`. Matches the FUSE `OrganizeRequest` default. |
+| `RAGFS_MCP_MAX_BATCH_OPS` | `10` | Max operations in one `ragfs_batch_operations` call. Docs/tests use 1–3; 10 is a conservative agent-turn ceiling. |
+| `RAGFS_MCP_MAX_OP_CONTENT_BYTES` | `1048576` | Max UTF-8 bytes of `content` on one batch create/write. Conservative vs index `max_file_size` (50MB). |
+| `RAGFS_MCP_TIMEOUT_SECONDS` | `30` | Wall-clock timeout per tool call. Local gte-small search is seconds; raise this for a cold model download. `0` disables. |
+| `RAGFS_MCP_RATE_LIMIT` | `30` | Max tool calls per process in one window. Stdio has one client per process. `0` disables. |
+| `RAGFS_MCP_RATE_WINDOW_SECONDS` | `60` | Sliding window for `RAGFS_MCP_RATE_LIMIT`. |
 | `RAGFS_DATA_DIR` | CLI `ProjectDirs` path (Linux: `$XDG_DATA_HOME/ragfs` if absolute) | Data root; indices are stored under `indices/{16hex}/` |
 | `RAGFS_DB_PATH` | *(unset)* | Optional explicit LanceDB path; skips hashing when set |
 | `RAGFS_MODEL_PATH` | `~/.local/share/ragfs/models` | Path to embedding model |

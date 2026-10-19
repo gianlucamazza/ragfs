@@ -75,6 +75,16 @@ def allow_writes(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("RAGFS_MCP_ALLOW_WRITES", "1")
 
 
+@pytest.fixture(autouse=True)
+def reset_mcp_rate_limiter():
+    """Isolate the per-process tool-call window between tests."""
+    from ragfs_mcp.server import reset_rate_limiter
+
+    reset_rate_limiter()
+    yield
+    reset_rate_limiter()
+
+
 def pytest_configure(config):
     """Add custom pytest markers."""
     config.addinivalue_line("markers", "slow: marks tests as slow")

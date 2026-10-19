@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   strict/lenient metrics). Design only; implementation follows in phased PRs.
 
 ### Changed
+- **Behaviour change:** MCP tools now reject over-limit inputs that previously ran unbounded (`limit`, query length, `max_groups`, batch operation count, and per-op `content` size). Each cap is overridable with a `RAGFS_MCP_*` env var. Every tool call also has a wall-clock timeout and a per-process rate limit.
 - **Behaviour change:** Mutating MCP tools now need `RAGFS_MCP_ALLOW_WRITES=1` (`ragfs_delete_to_trash`, `ragfs_restore_from_trash`, `ragfs_undo`, `ragfs_approve_plan`, `ragfs_reject_plan`, and `ragfs_batch_operations` when `dry_run` is false). Reads and dry runs are unchanged.
 - MCP jail roots are allowlisted from `RAGFS_SOURCE_PATH` and optional `RAGFS_ALLOWED_ROOTS` (`os.pathsep`-separated), each resolved with `realpath`. `index` must be an allowlisted root or the recorded source of a known index; hex index ids map to that recorded source and do not fall back to `RAGFS_SOURCE_PATH` or cwd.
 
@@ -21,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MCP batch operations construct the safety manager with the source tree as the jail and the index data dir for trash/history, so deletes can be undone. If soft-delete fails, the operation fails instead of permanently removing the file.
 
 ### Security
+- MCP tools reject unbounded `limit`, query length, `max_groups`, batch size, and per-op content, and apply a per-call timeout plus a per-process rate limit (issue #164 MCP-02 / MCP-07).
 - MCP `ragfs_similar` resolves `file_path` with `realpath` (symlinks included) and rejects paths outside the allowlisted roots (`RAGFS_SOURCE_PATH` plus `RAGFS_ALLOWED_ROOTS`). The error does not echo the resolved absolute path.
 
 ## [0.2.1] - 2026-10-10
