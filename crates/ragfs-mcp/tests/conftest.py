@@ -43,27 +43,36 @@ def source_path(sample_files: Path) -> Path:
     return sample_files
 
 
+def _restore_env(name: str, previous: str | None) -> None:
+    if previous is None:
+        os.environ.pop(name, None)
+    else:
+        os.environ[name] = previous
+
+
 @pytest.fixture
 def env_vars(source_path: Path, db_path: Path):
     """Set environment variables for MCP server."""
     old_source = os.environ.get("RAGFS_SOURCE_PATH")
     old_db = os.environ.get("RAGFS_DB_PATH")
+    old_allowed = os.environ.get("RAGFS_ALLOWED_ROOTS")
+    old_writes = os.environ.get("RAGFS_MCP_ALLOW_WRITES")
 
     os.environ["RAGFS_SOURCE_PATH"] = str(source_path)
     os.environ["RAGFS_DB_PATH"] = str(db_path)
 
     yield
 
-    # Restore
-    if old_source:
-        os.environ["RAGFS_SOURCE_PATH"] = old_source
-    elif "RAGFS_SOURCE_PATH" in os.environ:
-        del os.environ["RAGFS_SOURCE_PATH"]
+    _restore_env("RAGFS_SOURCE_PATH", old_source)
+    _restore_env("RAGFS_DB_PATH", old_db)
+    _restore_env("RAGFS_ALLOWED_ROOTS", old_allowed)
+    _restore_env("RAGFS_MCP_ALLOW_WRITES", old_writes)
 
-    if old_db:
-        os.environ["RAGFS_DB_PATH"] = old_db
-    elif "RAGFS_DB_PATH" in os.environ:
-        del os.environ["RAGFS_DB_PATH"]
+
+@pytest.fixture
+def allow_writes(monkeypatch: pytest.MonkeyPatch):
+    """Opt in to mutating MCP tools."""
+    monkeypatch.setenv("RAGFS_MCP_ALLOW_WRITES", "1")
 
 
 def pytest_configure(config):

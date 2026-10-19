@@ -52,7 +52,8 @@ Add to your Claude Desktop configuration file:
       "command": "ragfs-mcp",
       "env": {
         "RAGFS_SOURCE_PATH": "/path/to/project",
-        "RAGFS_MODEL_PATH": "~/.local/share/ragfs/models"
+        "RAGFS_MODEL_PATH": "~/.local/share/ragfs/models",
+        "RAGFS_MCP_ALLOW_WRITES": "1"
       }
     }
   }
@@ -66,6 +67,10 @@ Add to your Claude Desktop configuration file:
 ```
 
 This is the same layout the CLI uses. Do **not** point `RAGFS_DB_PATH` at `indices/default` — that folder is not created by `ragfs index`. Set `RAGFS_DB_PATH` only to override the resolved LanceDB path explicitly.
+
+Mutating tools (`ragfs_delete_to_trash`, `ragfs_restore_from_trash`, `ragfs_undo`, `ragfs_approve_plan`, `ragfs_reject_plan`, and `ragfs_batch_operations` with `dry_run=false`) stay disabled until `RAGFS_MCP_ALLOW_WRITES=1`. Reads and dry runs do not need that flag.
+
+The jail root for those tools is allowlisted at startup: `RAGFS_SOURCE_PATH` plus optional `RAGFS_ALLOWED_ROOTS` (`os.pathsep`-separated), each resolved with `realpath`. `index` must be one of those roots, or a 16-hex index id whose recorded source is known (the `{indices}/{id}/source` sidecar, or an allowlisted root whose CLI id matches). Any other `index` value is rejected. Hex ids never fall back to `RAGFS_SOURCE_PATH` or the current working directory.
 
 Or using Python directly:
 
@@ -654,7 +659,9 @@ Pass the **source directory** (or the 16-hex id from `ragfs_list_indices`) as `i
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RAGFS_SOURCE_PATH` | Current directory | Default source directory to hash (must match `ragfs index <path>`) |
+| `RAGFS_SOURCE_PATH` | *(unset)* | Default source directory to hash (must match `ragfs index <path>`). Also the default allowlisted jail root. |
+| `RAGFS_ALLOWED_ROOTS` | *(unset)* | Extra allowlisted jail roots, `os.pathsep`-separated, each resolved with `realpath`. |
+| `RAGFS_MCP_ALLOW_WRITES` | *(unset)* | Set to `1` to enable mutating tools. Reads and `dry_run` batch calls work without it. |
 | `RAGFS_DATA_DIR` | CLI `ProjectDirs` path (Linux: `$XDG_DATA_HOME/ragfs` if absolute) | Data root; indices are stored under `indices/{16hex}/` |
 | `RAGFS_DB_PATH` | *(unset)* | Optional explicit LanceDB path; skips hashing when set |
 | `RAGFS_MODEL_PATH` | `~/.local/share/ragfs/models` | Path to embedding model |

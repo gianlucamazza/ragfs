@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- MCP mutating tools (`ragfs_delete_to_trash`, `ragfs_restore_from_trash`, `ragfs_undo`, `ragfs_approve_plan`, `ragfs_reject_plan`, and `ragfs_batch_operations` when `dry_run` is false) require `RAGFS_MCP_ALLOW_WRITES=1`. Reads and dry runs are unchanged.
+- MCP jail roots are allowlisted from `RAGFS_SOURCE_PATH` and optional `RAGFS_ALLOWED_ROOTS` (`os.pathsep`-separated), each resolved with `realpath`. `index` must be an allowlisted root or the recorded source of a known index; hex index ids map to that recorded source and do not fall back to `RAGFS_SOURCE_PATH` or cwd.
+
+### Added
+- `RAGFS_ALLOWED_ROOTS` and `RAGFS_MCP_ALLOW_WRITES` environment variables for the MCP server.
+
 ## [0.2.1] - 2026-10-10
 
 ### Security

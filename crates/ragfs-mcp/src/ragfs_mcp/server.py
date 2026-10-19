@@ -69,6 +69,18 @@ DEFAULT_MODEL_PATH = DEFAULT_DATA_DIR / "models"
 # 16 hex chars = CLI index id (blake3(canonical_source)[:16])
 _INDEX_HASH_RE = re.compile(r"^[0-9a-f]{16}$", re.IGNORECASE)
 
+# Sidecar under ``{indices}/{hex_id}/source`` recording that index's jail root.
+INDEX_SOURCE_FILENAME = "source"
+
+INDEX_NOT_ALLOWED_ERROR = "Index is not an allowed root"
+WRITES_DISABLED_ERROR = (
+    "Mutating MCP tools are disabled. Set RAGFS_MCP_ALLOW_WRITES=1 to enable writes."
+)
+
+
+class IndexNotAllowedError(ValueError):
+    """Raised when ``index`` is not an allowlisted root or a known index source."""
+
 
 def _project_data_dir() -> Path:
     """CLI `ProjectDirs::from("", "", "ragfs").data_dir()` fallback."""
@@ -146,6 +158,75 @@ def get_db_path(index: str = "default") -> str:
 def get_model_path() -> str:
     """Get the model path."""
     return os.environ.get("RAGFS_MODEL_PATH", str(DEFAULT_MODEL_PATH))
+
+
+def _realpath(path: str) -> str:
+    """Resolve ``path`` with ``os.path.realpath`` (expand ``~`` first)."""
+    return os.path.realpath(os.path.expanduser(path))
+
+
+def build_allowed_roots() -> frozenset[str]:
+    """Build the allowlist of jail roots from process environment.
+
+    Roots are ``RAGFS_SOURCE_PATH`` plus optional ``RAGFS_ALLOWED_ROOTS``
+    (``os.pathsep``-separated). Each entry is resolved with ``realpath``.
+    """
+    roots: list[str] = []
+    source = os.environ.get("RAGFS_SOURCE_PATH")
+    if source and source.strip():
+        roots.append(_realpath(source))
+    extra = os.environ.get("RAGFS_ALLOWED_ROOTS", "")
+    if extra:
+        for part in extra.split(os.pathsep):
+            part = part.strip()
+            if part:
+                roots.append(_realpath(part))
+    return frozenset(roots)
+
+
+def writes_allowed() -> bool:
+    """Mutating tools run only when ``RAGFS_MCP_ALLOW_WRITES`` is ``1``."""
+    return os.environ.get("RAGFS_MCP_ALLOW_WRITES") == "1"
+
+
+def recorded_source_for_index_id(index_id: str) -> str | None:
+    """Return the recorded jail root for a 16-hex index id, if any.
+
+    Looks up ``{indices}/{id}/source``, then allowlisted roots whose CLI
+    index id matches. Does not fall back to ``RAGFS_SOURCE_PATH`` or cwd
+    unless that path is the recorded/hashed source for this id.
+    """
+    index_id = index_id.lower()
+    sidecar = get_indices_dir() / index_id / INDEX_SOURCE_FILENAME
+    if sidecar.is_file():
+        text = sidecar.read_text(encoding="utf-8").strip()
+        if text:
+            return _realpath(text)
+    for root in build_allowed_roots():
+        if index_id_for_source(root) == index_id:
+            return root
+    return None
+
+
+def _recorded_source_paths() -> set[str]:
+    """Realpaths recorded in index source sidecars."""
+    paths: set[str] = set()
+    indices_dir = get_indices_dir()
+    if not indices_dir.is_dir():
+        return paths
+    for item in indices_dir.iterdir():
+        if not item.is_dir() or not _INDEX_HASH_RE.fullmatch(item.name):
+            continue
+        sidecar = item / INDEX_SOURCE_FILENAME
+        if sidecar.is_file():
+            text = sidecar.read_text(encoding="utf-8").strip()
+            if text:
+                paths.add(_realpath(text))
+    return paths
+
+
+def _json_error(message: str) -> str:
+    return json.dumps({"error": message})
 
 
 @mcp.tool()
@@ -402,15 +483,48 @@ async def ragfs_list_indices() -> str:
 
 
 def get_source_path(index: str = "default") -> str:
-    """Get the source directory path for safety/semantic operations."""
+    """Return the jail root for safety/semantic operations.
+
+    The root must be in the allowlist (``RAGFS_SOURCE_PATH`` plus
+    ``RAGFS_ALLOWED_ROOTS``) or the recorded source of a known index.
+    Hex index ids map to that recorded source and never fall back to
+    ``RAGFS_SOURCE_PATH`` or the current working directory.
+    """
+    allowed = build_allowed_roots()
+    recorded_paths = _recorded_source_paths()
+
     if index and index != "default":
-        expanded = Path(index).expanduser()
-        if expanded.exists() or not _INDEX_HASH_RE.fullmatch(index):
-            return canonical_source(str(expanded))
+        if _INDEX_HASH_RE.fullmatch(index):
+            source = recorded_source_for_index_id(index)
+            if source is None:
+                raise IndexNotAllowedError(f"{INDEX_NOT_ALLOWED_ERROR}: {index}")
+            return source
+        resolved = _realpath(index)
+        if resolved in allowed or resolved in recorded_paths:
+            return resolved
+        raise IndexNotAllowedError(f"{INDEX_NOT_ALLOWED_ERROR}: {index}")
+
     source = os.environ.get("RAGFS_SOURCE_PATH")
-    if source:
-        return source
-    return os.getcwd()
+    if source and source.strip():
+        resolved = _realpath(source)
+        if resolved in allowed:
+            return resolved
+    raise IndexNotAllowedError(f"{INDEX_NOT_ALLOWED_ERROR}: {index}")
+
+
+def _resolve_source(index: str) -> str | None:
+    """Return a JSON error payload if ``index`` is not an allowed root."""
+    try:
+        get_source_path(index)
+    except IndexNotAllowedError as exc:
+        return _json_error(str(exc))
+    return None
+
+
+def _deny_writes() -> str | None:
+    if writes_allowed():
+        return None
+    return _json_error(WRITES_DISABLED_ERROR)
 
 
 @mcp.tool()
@@ -433,6 +547,13 @@ async def ragfs_delete_to_trash(
     Returns:
         JSON with undo_id for restoration, or error message.
     """
+    err = _resolve_source(index)
+    if err:
+        return err
+    denied = _deny_writes()
+    if denied:
+        return denied
+
     try:
         from ragfs import RagfsSafetyManager
     except ImportError:
@@ -471,6 +592,10 @@ async def ragfs_list_trash(index: str = "default") -> str:
     Returns:
         JSON with list of trash entries.
     """
+    err = _resolve_source(index)
+    if err:
+        return err
+
     try:
         from ragfs import RagfsSafetyManager
     except ImportError:
@@ -519,6 +644,13 @@ async def ragfs_restore_from_trash(
     Returns:
         JSON with restored file path, or error message.
     """
+    err = _resolve_source(index)
+    if err:
+        return err
+    denied = _deny_writes()
+    if denied:
+        return denied
+
     try:
         from ragfs import RagfsSafetyManager
     except ImportError:
@@ -560,6 +692,10 @@ async def ragfs_get_history(
     Returns:
         JSON with operation history entries.
     """
+    err = _resolve_source(index)
+    if err:
+        return err
+
     try:
         from ragfs import RagfsSafetyManager
     except ImportError:
@@ -613,6 +749,13 @@ async def ragfs_undo(
     Returns:
         JSON with undo result, or error message.
     """
+    err = _resolve_source(index)
+    if err:
+        return err
+    denied = _deny_writes()
+    if denied:
+        return denied
+
     try:
         from ragfs import RagfsSafetyManager
     except ImportError:
@@ -665,6 +808,10 @@ async def ragfs_find_duplicates(
     Returns:
         JSON with duplicate groups and potential savings.
     """
+    err = _resolve_source(index)
+    if err:
+        return err
+
     try:
         from ragfs import RagfsSemanticManager
     except ImportError:
@@ -722,6 +869,10 @@ async def ragfs_analyze_cleanup(index: str = "default") -> str:
     Returns:
         JSON with cleanup candidates and potential savings.
     """
+    err = _resolve_source(index)
+    if err:
+        return err
+
     try:
         from ragfs import RagfsSemanticManager
     except ImportError:
@@ -793,6 +944,10 @@ async def ragfs_propose_organization(
     Returns:
         JSON with plan_id and proposed actions for review.
     """
+    err = _resolve_source(index)
+    if err:
+        return err
+
     try:
         from ragfs import OrganizeRequest, OrganizeStrategy, RagfsSemanticManager
     except ImportError:
@@ -868,6 +1023,10 @@ async def ragfs_propose_cleanup(index: str = "default") -> str:
     Returns:
         JSON with plan_id and proposed cleanup actions.
     """
+    err = _resolve_source(index)
+    if err:
+        return err
+
     try:
         from ragfs import OrganizeRequest, OrganizeStrategy, RagfsSemanticManager
     except ImportError:
@@ -930,6 +1089,10 @@ async def ragfs_list_pending_plans(index: str = "default") -> str:
     Returns:
         JSON with list of pending plans.
     """
+    err = _resolve_source(index)
+    if err:
+        return err
+
     try:
         from ragfs import RagfsSemanticManager
     except ImportError:
@@ -983,6 +1146,10 @@ async def ragfs_get_plan(
     Returns:
         JSON with complete plan details.
     """
+    err = _resolve_source(index)
+    if err:
+        return err
+
     try:
         from ragfs import RagfsSemanticManager
     except ImportError:
@@ -1046,6 +1213,13 @@ async def ragfs_approve_plan(
     Returns:
         JSON with execution result and undo information.
     """
+    err = _resolve_source(index)
+    if err:
+        return err
+    denied = _deny_writes()
+    if denied:
+        return denied
+
     try:
         from ragfs import RagfsSemanticManager
     except ImportError:
@@ -1094,6 +1268,13 @@ async def ragfs_reject_plan(
     Returns:
         JSON confirming rejection.
     """
+    err = _resolve_source(index)
+    if err:
+        return err
+    denied = _deny_writes()
+    if denied:
+        return denied
+
     try:
         from ragfs import RagfsSemanticManager
     except ImportError:
@@ -1159,6 +1340,20 @@ async def ragfs_batch_operations(
     Returns:
         JSON with batch result and undo IDs.
     """
+    err = _resolve_source(index)
+    if err:
+        return err
+    if not dry_run:
+        denied = _deny_writes()
+        if denied:
+            return denied
+
+    known_actions = {"create", "move", "copy", "delete", "mkdir", "write", "symlink"}
+    for op in operations:
+        action = op.get("action", "")
+        if action not in known_actions:
+            return json.dumps({"error": f"Unknown action: {action}"})
+
     try:
         from ragfs import Operation, RagfsOpsManager
     except ImportError:
@@ -1241,6 +1436,7 @@ def create_server() -> MCPServer:
 
     This is the entry point used by MCP clients.
     """
+    build_allowed_roots()
     return mcp
 
 
@@ -1250,6 +1446,7 @@ async def main() -> None:
     This is used when running the server directly:
         python -m ragfs_mcp
     """
+    build_allowed_roots()
     await mcp.run_stdio_async()
 
 

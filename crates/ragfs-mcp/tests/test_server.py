@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import blake3
@@ -55,7 +56,7 @@ class TestPathJail:
 
     @pytest.mark.asyncio
     async def test_delete_to_trash_rejects_absolute_outside_root(
-        self, source_path: Path, env_vars, tmp_path: Path
+        self, source_path: Path, env_vars, allow_writes, tmp_path: Path
     ):
         pytest.importorskip("ragfs")
         from ragfs_mcp.server import ragfs_delete_to_trash
@@ -71,7 +72,9 @@ class TestPathJail:
         assert secret.exists()
 
     @pytest.mark.asyncio
-    async def test_batch_rejects_parent_escape(self, source_path: Path, env_vars):
+    async def test_batch_rejects_parent_escape(
+        self, source_path: Path, env_vars, allow_writes
+    ):
         pytest.importorskip("ragfs")
         from ragfs_mcp.server import ragfs_batch_operations
 
@@ -201,14 +204,18 @@ class TestBatchOperations:
         assert "results" in data or "error" in data
 
     @pytest.mark.asyncio
-    async def test_ragfs_batch_operations_invalid_action(self):
+    async def test_ragfs_batch_operations_invalid_action(
+        self, source_path: Path, env_vars, allow_writes
+    ):
         """Test batch with invalid action type."""
         from ragfs_mcp.server import ragfs_batch_operations
 
         operations = [
             {"action": "invalid_action", "target": "/test/path"}
         ]
-        result = await ragfs_batch_operations(operations=operations)
+        result = await ragfs_batch_operations(
+            operations=operations, index=str(source_path)
+        )
         data = json.loads(result)
 
         assert "error" in data
@@ -377,17 +384,295 @@ class TestServerConfiguration:
         path = get_model_path()
         assert "models" in path
 
-    def test_get_source_path(self):
-        """Test source path."""
-        import os
-
+    def test_get_source_path_default_uses_allowlisted_source(
+        self, tmp_path, monkeypatch
+    ):
+        """Default index uses realpath(RAGFS_SOURCE_PATH) when it is allowlisted."""
         from ragfs_mcp.server import get_source_path
 
-        path = get_source_path()
-        assert path == os.getcwd() or path is not None
+        monkeypatch.setenv("RAGFS_SOURCE_PATH", str(tmp_path))
+        monkeypatch.delenv("RAGFS_ALLOWED_ROOTS", raising=False)
+        assert get_source_path() == os.path.realpath(str(tmp_path))
+        assert get_source_path("default") == os.path.realpath(str(tmp_path))
 
-    def test_get_source_path_uses_index_directory(self, tmp_path):
-        """Passing a source directory as index resolves that directory."""
+    def test_get_source_path_uses_index_directory(self, tmp_path, monkeypatch):
+        """Passing an allowlisted source directory as index resolves that directory."""
         from ragfs_mcp.server import get_source_path
 
-        assert get_source_path(str(tmp_path)) == str(tmp_path.resolve())
+        monkeypatch.setenv("RAGFS_SOURCE_PATH", str(tmp_path))
+        monkeypatch.delenv("RAGFS_ALLOWED_ROOTS", raising=False)
+        assert get_source_path(str(tmp_path)) == os.path.realpath(str(tmp_path))
+
+
+class TestAllowlistedRoots:
+    """Mutating tools only operate on allowlisted roots or a known index source."""
+
+    def test_rejects_arbitrary_existing_directory(self, tmp_path, monkeypatch):
+        """An existing directory outside the allowlist is not a jail root."""
+        from ragfs_mcp.server import get_source_path
+
+        allowed = tmp_path / "allowed"
+        other = tmp_path / "other"
+        allowed.mkdir()
+        other.mkdir()
+        monkeypatch.setenv("RAGFS_SOURCE_PATH", str(allowed))
+        monkeypatch.delenv("RAGFS_ALLOWED_ROOTS", raising=False)
+
+        with pytest.raises(ValueError, match="not an allowed root"):
+            get_source_path(str(other))
+
+    def test_rejects_home_directory_as_index(self, tmp_path, monkeypatch):
+        """Home is an existing directory and must not become the jail root."""
+        from ragfs_mcp.server import get_source_path
+
+        allowed = tmp_path / "allowed"
+        allowed.mkdir()
+        monkeypatch.setenv("RAGFS_SOURCE_PATH", str(allowed))
+        monkeypatch.delenv("RAGFS_ALLOWED_ROOTS", raising=False)
+
+        with pytest.raises(ValueError, match="not an allowed root"):
+            get_source_path(str(Path.home()))
+
+    def test_extra_allowed_roots_are_accepted(self, tmp_path, monkeypatch):
+        from ragfs_mcp.server import get_source_path
+
+        allowed = tmp_path / "allowed"
+        extra = tmp_path / "extra"
+        other = tmp_path / "other"
+        allowed.mkdir()
+        extra.mkdir()
+        other.mkdir()
+        monkeypatch.setenv("RAGFS_SOURCE_PATH", str(allowed))
+        monkeypatch.setenv("RAGFS_ALLOWED_ROOTS", str(extra))
+
+        assert get_source_path(str(extra)) == os.path.realpath(str(extra))
+        with pytest.raises(ValueError, match="not an allowed root"):
+            get_source_path(str(other))
+
+    def test_hex_id_of_allowlisted_root_maps_to_that_root(self, tmp_path, monkeypatch):
+        """A hex id that is the CLI hash of an allowlisted root uses that root."""
+        from ragfs_mcp.server import get_source_path, index_id_for_source
+
+        monkeypatch.setenv("RAGFS_SOURCE_PATH", str(tmp_path))
+        monkeypatch.delenv("RAGFS_ALLOWED_ROOTS", raising=False)
+        hex_id = index_id_for_source(str(tmp_path))
+        assert get_source_path(hex_id) == os.path.realpath(str(tmp_path))
+
+    def test_hex_id_without_recorded_source_is_rejected(self, tmp_path, monkeypatch):
+        """Hex ids must not fall back to RAGFS_SOURCE_PATH or cwd."""
+        from ragfs_mcp.server import get_source_path
+
+        monkeypatch.setenv("RAGFS_SOURCE_PATH", str(tmp_path))
+        monkeypatch.setenv("RAGFS_DATA_DIR", str(tmp_path / "data"))
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(ValueError, match="not an allowed root"):
+            get_source_path("0123456789abcdef")
+
+    def test_hex_id_maps_to_recorded_source(self, tmp_path, monkeypatch):
+        """Writes for a hex id use that index's recorded source, not SOURCE_PATH."""
+        from ragfs_mcp.server import (
+            INDEX_SOURCE_FILENAME,
+            get_indices_dir,
+            get_source_path,
+            index_id_for_source,
+        )
+
+        fallback = tmp_path / "fallback"
+        recorded = tmp_path / "recorded"
+        fallback.mkdir()
+        recorded.mkdir()
+        monkeypatch.setenv("RAGFS_SOURCE_PATH", str(fallback))
+        monkeypatch.setenv("RAGFS_DATA_DIR", str(tmp_path / "data"))
+        monkeypatch.delenv("RAGFS_DB_PATH", raising=False)
+        monkeypatch.chdir(fallback)
+
+        hex_id = index_id_for_source(str(recorded))
+        index_dir = get_indices_dir() / hex_id
+        index_dir.mkdir(parents=True)
+        (index_dir / INDEX_SOURCE_FILENAME).write_text(
+            os.path.realpath(str(recorded)) + "\n"
+        )
+
+        assert get_source_path(hex_id) == os.path.realpath(str(recorded))
+        assert get_source_path(hex_id) != os.path.realpath(str(fallback))
+        assert get_source_path(hex_id) != os.getcwd()
+
+
+class TestWriteToolGate:
+    """Mutating MCP tools require RAGFS_MCP_ALLOW_WRITES=1."""
+
+    @pytest.mark.asyncio
+    async def test_delete_refuses_without_writes_flag(
+        self, source_path: Path, env_vars
+    ):
+        from ragfs_mcp.server import ragfs_delete_to_trash
+
+        target = source_path / "doc1.txt"
+        result = json.loads(
+            await ragfs_delete_to_trash(path="doc1.txt", index=str(source_path))
+        )
+        assert "error" in result
+        assert "RAGFS_MCP_ALLOW_WRITES" in result["error"]
+        assert target.exists()
+
+    @pytest.mark.asyncio
+    async def test_batch_create_refuses_without_writes_flag(
+        self, source_path: Path, env_vars
+    ):
+        from ragfs_mcp.server import ragfs_batch_operations
+
+        result = json.loads(
+            await ragfs_batch_operations(
+                operations=[
+                    {"action": "create", "target": "new.txt", "content": "nope"}
+                ],
+                dry_run=False,
+                index=str(source_path),
+            )
+        )
+        assert "error" in result
+        assert "RAGFS_MCP_ALLOW_WRITES" in result["error"]
+        assert not (source_path / "new.txt").exists()
+
+    @pytest.mark.asyncio
+    async def test_restore_undo_approve_refuse_without_writes_flag(
+        self, source_path: Path, env_vars
+    ):
+        from ragfs_mcp.server import (
+            ragfs_approve_plan,
+            ragfs_restore_from_trash,
+            ragfs_undo,
+        )
+
+        restore = json.loads(
+            await ragfs_restore_from_trash(undo_id="x", index=str(source_path))
+        )
+        undo = json.loads(await ragfs_undo(undo_id="x", index=str(source_path)))
+        approve = json.loads(
+            await ragfs_approve_plan(plan_id="x", index=str(source_path))
+        )
+        for data in (restore, undo, approve):
+            assert "error" in data
+            assert "RAGFS_MCP_ALLOW_WRITES" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_batch_dry_run_works_without_writes_flag(
+        self, source_path: Path, env_vars
+    ):
+        pytest.importorskip("ragfs")
+        from ragfs_mcp.server import ragfs_batch_operations
+
+        result = json.loads(
+            await ragfs_batch_operations(
+                operations=[{"action": "mkdir", "target": "new_dir"}],
+                dry_run=True,
+                index=str(source_path),
+            )
+        )
+        blob = json.dumps(result)
+        assert "RAGFS_MCP_ALLOW_WRITES" not in blob
+        assert result.get("dry_run") is True or "error" in result
+        assert not (source_path / "new_dir").exists()
+
+    @pytest.mark.asyncio
+    async def test_delete_rejects_arbitrary_existing_dir_as_index(
+        self, source_path: Path, env_vars, allow_writes, tmp_path: Path
+    ):
+        from ragfs_mcp.server import ragfs_delete_to_trash
+
+        outsider = tmp_path / "outside_root"
+        outsider.mkdir()
+        secret = outsider / "secret.txt"
+        secret.write_text("secret")
+
+        result = json.loads(
+            await ragfs_delete_to_trash(path="secret.txt", index=str(outsider))
+        )
+        assert "error" in result
+        assert "not an allowed root" in result["error"]
+        assert secret.exists()
+
+    @pytest.mark.asyncio
+    async def test_batch_create_rejects_arbitrary_existing_dir_as_index(
+        self, source_path: Path, env_vars, allow_writes, tmp_path: Path
+    ):
+        from ragfs_mcp.server import ragfs_batch_operations
+
+        outsider = tmp_path / "outside_root"
+        outsider.mkdir()
+
+        result = json.loads(
+            await ragfs_batch_operations(
+                operations=[
+                    {"action": "create", "target": "planted.txt", "content": "nope"}
+                ],
+                dry_run=False,
+                index=str(outsider),
+            )
+        )
+        assert "error" in result
+        assert "not an allowed root" in result["error"]
+        assert not (outsider / "planted.txt").exists()
+
+    @pytest.mark.asyncio
+    async def test_allowed_path_delete_works_with_writes_flag(
+        self, source_path: Path, env_vars, allow_writes
+    ):
+        pytest.importorskip("ragfs")
+        from ragfs_mcp.server import ragfs_delete_to_trash
+
+        target = source_path / "doc1.txt"
+        assert target.exists()
+        result = json.loads(
+            await ragfs_delete_to_trash(path="doc1.txt", index=str(source_path))
+        )
+        assert result.get("success") is True
+        assert not target.exists()
+
+    @pytest.mark.asyncio
+    async def test_hex_id_writes_stay_inside_recorded_source(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        pytest.importorskip("ragfs")
+        from ragfs_mcp.server import (
+            INDEX_SOURCE_FILENAME,
+            get_indices_dir,
+            index_id_for_source,
+            ragfs_delete_to_trash,
+        )
+
+        fallback = tmp_path / "fallback"
+        recorded = tmp_path / "recorded"
+        fallback.mkdir()
+        recorded.mkdir()
+        fallback_file = fallback / "fallback.txt"
+        recorded_file = recorded / "keep.txt"
+        fallback_file.write_text("fallback")
+        recorded_file.write_text("recorded")
+
+        monkeypatch.setenv("RAGFS_SOURCE_PATH", str(fallback))
+        monkeypatch.setenv("RAGFS_MCP_ALLOW_WRITES", "1")
+        monkeypatch.setenv("RAGFS_DATA_DIR", str(tmp_path / "data"))
+        monkeypatch.delenv("RAGFS_DB_PATH", raising=False)
+        monkeypatch.chdir(fallback)
+
+        hex_id = index_id_for_source(str(recorded))
+        index_dir = get_indices_dir() / hex_id
+        index_dir.mkdir(parents=True)
+        (index_dir / INDEX_SOURCE_FILENAME).write_text(
+            os.path.realpath(str(recorded)) + "\n"
+        )
+
+        ok = json.loads(
+            await ragfs_delete_to_trash(path="keep.txt", index=hex_id)
+        )
+        assert ok.get("success") is True
+        assert not recorded_file.exists()
+        assert fallback_file.exists()
+
+        denied = json.loads(
+            await ragfs_delete_to_trash(path=str(fallback_file), index=hex_id)
+        )
+        assert "error" in denied
+        assert fallback_file.exists()
