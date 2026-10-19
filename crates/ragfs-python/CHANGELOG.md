@@ -10,6 +10,19 @@ This file tracks `ragfs-python` workspace versions. The crate is listed in
 on PyPI yet. Git tag `v0.2.0` is dated 2026-09-25 (the crate heading below
 keeps the earlier workspace date).
 
+## [0.2.2] - 2026-10-19
+
+
+### Fixed
+
+- **mcp**: Batch operations use the source root for safety; no hard-delete fallback ([#166](https://github.com/gianlucamazza/ragfs/pull/166))
+
+### Miscellaneous
+
+- Prepare v0.2.2 (changelog + python package versions) ([#173](https://github.com/gianlucamazza/ragfs/pull/173))
+[0.2.2]: https://github.com/gianlucamazza/ragfs/compare/v0.2.1...v0.2.2
+
+
 ## [0.2.1] - 2026-10-17
 
 
