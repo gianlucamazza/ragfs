@@ -689,6 +689,9 @@ A single frozen scenario (illustrative ids; not a measured result):
    source `{uri: "s2", kind: "user-utterance"}`.
 4. Query at `t1+`: gold
    `{current: "Acme", replaced: "Globex", source: {uri: "s2", kind: "user-utterance"}}`.
+   Retrieval gold is `r2` only (step 8). `replaced: "Globex"` is filled by
+   following `r2.supersedes` to `r1` in the adapter’s store or in the
+   frozen dataset — a lookup, not a second retrieval hit.
 5. Time-travel query at `t` with `t0 ≤ t < t1`: gold
    `{current: "Globex", replaced: null, source: {uri: "s1", kind: "user-utterance"}}`.
 6. Unknown `fact_id`: gold
@@ -816,7 +819,9 @@ advantage.
 - **Raw outputs.** Every prediction, receipt, and judge payload (if any)
   is written under `raw/{system}/{dataset}/{item_id}.json` and is not
   deleted by the summary step.
-- **Results file.** JSON, schema version 1, required keys:
+- **Results file.** JSON, schema version 1. Metrics are **not** a flat
+  object: each row is one `(system, dataset, split, ability)` cell.
+  There is no top-level overall score.
 
 ```json
 {
@@ -835,27 +840,39 @@ advantage.
     "emotional_memory_git_sha": "TBD (to be measured)"
   },
   "pins": [],
-  "systems": [],
-  "metrics": {
-    "exact_match_strict": "TBD (to be measured)",
-    "exact_match_lenient": "TBD (to be measured)",
-    "token_f1_strict": "TBD (to be measured)",
-    "token_f1_lenient": "TBD (to be measured)",
-    "recall_at_k_any": "TBD (to be measured)",
-    "recall_at_k_all": "TBD (to be measured)",
-    "recall_at_k_frac": "TBD (to be measured)",
-    "latency_s_per_query": "TBD (to be measured)",
-    "cost_usd_per_query": "TBD (to be measured)",
-    "judge": null
-  }
+  "systems": ["bm25", "vector", "ragfs", "emotional-memory"],
+  "judge": null,
+  "metrics": [
+    {
+      "system": "ragfs",
+      "dataset": "longmemeval-cleaned",
+      "split": "oracle",
+      "ability": "knowledge-update",
+      "n_items": "TBD (to be measured)",
+      "n_items_retrieval": "TBD (to be measured)",
+      "exact_match_strict": "TBD (to be measured)",
+      "exact_match_lenient": "TBD (to be measured)",
+      "token_f1_strict": "TBD (to be measured)",
+      "token_f1_lenient": "TBD (to be measured)",
+      "recall_at_k_any": "TBD (to be measured)",
+      "recall_at_k_all": "TBD (to be measured)",
+      "recall_at_k_frac": "TBD (to be measured)",
+      "latency_s_per_query": "TBD (to be measured)",
+      "cost_usd_per_query": "TBD (to be measured)"
+    }
+  ]
 }
 ```
 
 `git_sha` is the harness repo commit that produced the file.
 `git_dirty` must be `false` for any published artefact. `judge` is
 `null` when the judge is off; otherwise it names the pinned model and
-prompt hash **and** a sibling `metrics_without_judge` object is
-required.
+prompt hash **and** each metrics row also has a sibling
+`*_without_judge` field for EM/F1 (never judged scores alone).
+`n_items_retrieval` may be lower than `n_items` because empty-gold
+items are excluded from recall@k. Ability `"__all__"` is the
+micro-average over items in that system/dataset/split; it is not a
+rank.
 
 ### Threats to validity and publication
 
