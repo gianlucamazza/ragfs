@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- MCP `ToolAnnotations` (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`, and a UI `title`) on every `ragfs-mcp` tool (issue #164 MCP-01). Hints are not permissions.
 - `RAGFS_ALLOWED_ROOTS` and `RAGFS_MCP_ALLOW_WRITES` environment variables for the MCP server.
 - Accepted ADR-009: transparent memory benchmark harness for ragfs and
   emotional-memory (protocol, pinned public datasets, versioned facts,
@@ -22,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MCP batch operations construct the safety manager with the source tree as the jail and the index data dir for trash/history, so deletes can be undone. If soft-delete fails, the operation fails instead of permanently removing the file.
 
 ### Security
+- MCP tools advertise accurate `ToolAnnotations` so clients can distinguish read vs write vs destructive operations (issue #164 MCP-01). Hints are not ACLs; writes still require `RAGFS_MCP_ALLOW_WRITES=1` and the root allowlist.
 - MCP tools reject unbounded `limit`, query length, `max_groups`, batch size, and per-op content, and apply a per-call timeout plus a per-process rate limit (issue #164 MCP-02 / MCP-07).
 - MCP `ragfs_similar` resolves `file_path` with `realpath` (symlinks included) and rejects paths outside the allowlisted roots (`RAGFS_SOURCE_PATH` plus `RAGFS_ALLOWED_ROOTS`). The error does not echo the resolved absolute path.
 

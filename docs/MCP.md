@@ -92,6 +92,34 @@ Or using Python directly:
 
 ## Available Tools
 
+Each tool advertises MCP [ToolAnnotations](https://modelcontextprotocol.io/specification/2025-11-25/schema#toolannotations)
+(`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`, and a UI `title`).
+These are **hints for client UX**, not permissions. Authorization is enforced by
+`RAGFS_MCP_ALLOW_WRITES` and the root allowlist.
+
+| Tool | Title | readOnlyHint | destructiveHint | idempotentHint | openWorldHint |
+|------|-------|--------------|-----------------|----------------|---------------|
+| `ragfs_search` | Semantic Search | true | false | true | false |
+| `ragfs_index_status` | Index Status | true | false | true | false |
+| `ragfs_similar` | Find Similar Files | true | false | true | false |
+| `ragfs_list_indices` | List Indices | true | false | true | false |
+| `ragfs_list_trash` | List Trash | true | false | true | false |
+| `ragfs_get_history` | Operation History | true | false | true | false |
+| `ragfs_find_duplicates` | Find Duplicates | true | false | true | false |
+| `ragfs_analyze_cleanup` | Analyze Cleanup | true | false | true | false |
+| `ragfs_list_pending_plans` | List Pending Plans | true | false | true | false |
+| `ragfs_get_plan` | Get Plan | true | false | true | false |
+| `ragfs_propose_organization` | Propose Organization | false | false | false | false |
+| `ragfs_propose_cleanup` | Propose Cleanup | false | false | false | false |
+| `ragfs_restore_from_trash` | Restore from Trash | false | false | false | false |
+| `ragfs_reject_plan` | Reject Plan | false | false | false | false |
+| `ragfs_delete_to_trash` | Delete to Trash | false | true | false | false |
+| `ragfs_undo` | Undo Operation | false | true | false | false |
+| `ragfs_approve_plan` | Approve Plan | false | true | false | false |
+| `ragfs_batch_operations` | Batch Operations | false | true | false | false |
+
+`openWorldHint` is false for every tool: they operate on the local index and allowlisted filesystem, not an open network. `ragfs_batch_operations` is annotated for the executing (non-`dry_run`) path; a dry run still does not require `RAGFS_MCP_ALLOW_WRITES`.
+
 ### ragfs_search
 
 Perform semantic search in indexed files.

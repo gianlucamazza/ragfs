@@ -54,6 +54,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import blake3
+from mcp.types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 try:
@@ -522,7 +523,36 @@ def parse_batch_operations(
     return parsed, None
 
 
-@mcp.tool()
+def _tool_annotations(
+    *,
+    title: str,
+    read_only_hint: bool,
+    destructive_hint: bool,
+    idempotent_hint: bool,
+    open_world_hint: bool = False,
+) -> ToolAnnotations:
+    """Build MCP ToolAnnotations (2025-11-25 schema#toolannotations).
+
+    These values are client UX hints only — not permissions. Authorization is
+    enforced by the RAGFS_MCP_ALLOW_WRITES gate and the root allowlist.
+    """
+    return ToolAnnotations(
+        title=title,
+        readOnlyHint=read_only_hint,
+        destructiveHint=destructive_hint,
+        idempotentHint=idempotent_hint,
+        openWorldHint=open_world_hint,
+    )
+
+
+@mcp.tool(
+    annotations=_tool_annotations(
+        title="Semantic Search",
+        read_only_hint=True,
+        destructive_hint=False,
+        idempotent_hint=True,
+    )
+)
 @with_limits
 async def ragfs_search(
     query: str,
@@ -596,7 +626,14 @@ async def ragfs_search(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=_tool_annotations(
+        title="Index Status",
+        read_only_hint=True,
+        destructive_hint=False,
+        idempotent_hint=True,
+    )
+)
 @with_limits
 async def ragfs_index_status(index: str = "default") -> str:
     """Get the status of an index.
@@ -650,7 +687,14 @@ async def ragfs_index_status(index: str = "default") -> str:
     return json.dumps(status, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=_tool_annotations(
+        title="Find Similar Files",
+        read_only_hint=True,
+        destructive_hint=False,
+        idempotent_hint=True,
+    )
+)
 @with_limits
 async def ragfs_similar(
     file_path: str,
@@ -745,7 +789,14 @@ async def ragfs_similar(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=_tool_annotations(
+        title="List Indices",
+        read_only_hint=True,
+        destructive_hint=False,
+        idempotent_hint=True,
+    )
+)
 @with_limits
 async def ragfs_list_indices() -> str:
     """List all available RAGFS indices.
@@ -841,7 +892,14 @@ def _deny_writes() -> str | None:
     return _json_error(WRITES_DISABLED_ERROR)
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=_tool_annotations(
+        title="Delete to Trash",
+        read_only_hint=False,
+        destructive_hint=True,
+        idempotent_hint=False,
+    )
+)
 @with_limits
 async def ragfs_delete_to_trash(
     path: str,
@@ -894,7 +952,14 @@ async def ragfs_delete_to_trash(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=_tool_annotations(
+        title="List Trash",
+        read_only_hint=True,
+        destructive_hint=False,
+        idempotent_hint=True,
+    )
+)
 @with_limits
 async def ragfs_list_trash(index: str = "default") -> str:
     """List all files in trash that can be restored.
@@ -943,7 +1008,14 @@ async def ragfs_list_trash(index: str = "default") -> str:
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=_tool_annotations(
+        title="Restore from Trash",
+        read_only_hint=False,
+        destructive_hint=False,
+        idempotent_hint=False,
+    )
+)
 @with_limits
 async def ragfs_restore_from_trash(
     undo_id: str,
@@ -990,7 +1062,14 @@ async def ragfs_restore_from_trash(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=_tool_annotations(
+        title="Operation History",
+        read_only_hint=True,
+        destructive_hint=False,
+        idempotent_hint=True,
+    )
+)
 @with_limits
 async def ragfs_get_history(
     limit: int = 50,
@@ -1055,7 +1134,14 @@ async def ragfs_get_history(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=_tool_annotations(
+        title="Undo Operation",
+        read_only_hint=False,
+        destructive_hint=True,
+        idempotent_hint=False,
+    )
+)
 @with_limits
 async def ragfs_undo(
     undo_id: str,
@@ -1114,7 +1200,14 @@ async def ragfs_undo(
 # =============================================================================
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=_tool_annotations(
+        title="Find Duplicates",
+        read_only_hint=True,
+        destructive_hint=False,
+        idempotent_hint=True,
+    )
+)
 @with_limits
 async def ragfs_find_duplicates(
     threshold: float = 0.95,
@@ -1180,7 +1273,14 @@ async def ragfs_find_duplicates(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=_tool_annotations(
+        title="Analyze Cleanup",
+        read_only_hint=True,
+        destructive_hint=False,
+        idempotent_hint=True,
+    )
+)
 @with_limits
 async def ragfs_analyze_cleanup(index: str = "default") -> str:
     """Analyze files for potential cleanup.
@@ -1245,7 +1345,14 @@ async def ragfs_analyze_cleanup(index: str = "default") -> str:
 # =============================================================================
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=_tool_annotations(
+        title="Propose Organization",
+        read_only_hint=False,
+        destructive_hint=False,
+        idempotent_hint=False,
+    )
+)
 @with_limits
 async def ragfs_propose_organization(
     scope: str,
@@ -1345,7 +1452,14 @@ async def ragfs_propose_organization(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=_tool_annotations(
+        title="Propose Cleanup",
+        read_only_hint=False,
+        destructive_hint=False,
+        idempotent_hint=False,
+    )
+)
 @with_limits
 async def ragfs_propose_cleanup(index: str = "default") -> str:
     """Create a cleanup plan for redundant/stale files (NOT executed until approved).
@@ -1415,7 +1529,14 @@ async def ragfs_propose_cleanup(index: str = "default") -> str:
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=_tool_annotations(
+        title="List Pending Plans",
+        read_only_hint=True,
+        destructive_hint=False,
+        idempotent_hint=True,
+    )
+)
 @with_limits
 async def ragfs_list_pending_plans(index: str = "default") -> str:
     """List all pending plans awaiting approval.
@@ -1471,7 +1592,14 @@ async def ragfs_list_pending_plans(index: str = "default") -> str:
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=_tool_annotations(
+        title="Get Plan",
+        read_only_hint=True,
+        destructive_hint=False,
+        idempotent_hint=True,
+    )
+)
 @with_limits
 async def ragfs_get_plan(
     plan_id: str,
@@ -1535,7 +1663,14 @@ async def ragfs_get_plan(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=_tool_annotations(
+        title="Approve Plan",
+        read_only_hint=False,
+        destructive_hint=True,
+        idempotent_hint=False,
+    )
+)
 @with_limits
 async def ragfs_approve_plan(
     plan_id: str,
@@ -1593,7 +1728,14 @@ async def ragfs_approve_plan(
         return json.dumps({"error": str(e)})
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=_tool_annotations(
+        title="Reject Plan",
+        read_only_hint=False,
+        destructive_hint=False,
+        idempotent_hint=False,
+    )
+)
 @with_limits
 async def ragfs_reject_plan(
     plan_id: str,
@@ -1652,7 +1794,14 @@ async def ragfs_reject_plan(
 # =============================================================================
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=_tool_annotations(
+        title="Batch Operations",
+        read_only_hint=False,
+        destructive_hint=True,
+        idempotent_hint=False,
+    )
+)
 @with_limits
 async def ragfs_batch_operations(
     operations: list[BatchOperation],
