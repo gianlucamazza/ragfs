@@ -67,4 +67,14 @@ per-case booleans/diagnostics, with no overall score or leaderboard.
 Latency scopes differ: CLI adapters include startup, revision checks and receipt
 I/O; BM25 runs in-process. These latencies must **not** be used to claim a speed
 advantage. A separate persistent-process performance protocol would be required.
-No model-backed result is claimed until the command runs with reviewed pins.
+A local real-model smoke run completed on 2026-10-20: all 12 structured
+answer checks passed (four queries across three systems). See
+`validation/versioned-facts-2026-10-20.json` for the source commit, protocol hash
+and observed write revisions. This tiny synthetic fixture is a functional
+regression, not a retrieval-quality benchmark. No aggregate score is published.
+
+`models/gte-small.json` records the exact Hub revision and downloaded file hashes.
+Copy that manifest beside files fetched from
+`https://huggingface.co/thenlper/gte-small/resolve/17e1f347d17fe144873b1201da91788898c639cd/`
+(`config.json`, `tokenizer.json`, `model.safetensors`), then pass the copied
+manifest to the command above. Weights are not vendored.
