@@ -13,7 +13,7 @@ This document captures key architectural decisions made in RAGFS and the rationa
 - [ADR-007: Async-First Design with Tokio](#adr-007-async-first-design-with-tokio)
 - [ADR-008: Index Revision Sidecar and Local Query Receipts](#adr-008-index-revision-sidecar-and-local-query-receipts)
 - [ADR-009: Transparent Memory Benchmark Harness](#adr-009-transparent-memory-benchmark-harness)
-- [ADR-010: Index Exclusion, Secret Handling, and Store Integrity](#adr-010-index-exclusion-secret-handling-and-store-integrity)
+- [ADR-010: Index Exclusion, Secret Handling, and Store Integrity](#adr-010-index-exclusion-secret-handling-and-store-integrity) (Accepted)
 
 ---
 
@@ -1013,8 +1013,7 @@ Social posts are not sources.
 ## ADR-010: Index Exclusion, Secret Handling, and Store Integrity
 
 ### Status
-Proposed (2026-10-20). Design only. No implementation PR until the owner
-accepts this ADR (status → Accepted).
+Accepted (2026-10-20, owner)
 
 ### Context
 A read-only review of the community forks
@@ -1029,7 +1028,8 @@ apply wholesale. The design below starts from current `main`, prior art,
 and a threat model, then sequences small PRs.
 
 This ADR does not implement code, change defaults, or publish an
-advisory. It does not invent benchmark or performance numbers.
+advisory. Implementation follows in the sequenced PRs below. It does
+not invent benchmark or performance numbers.
 
 #### Verified on `main` @ `bcb1611`
 
@@ -1121,9 +1121,10 @@ is the index. There is no `docs/community-forks.md` yet.
 
 ### Decision
 Adopt one shared, configurable exclusion and integrity model for CLI,
-FUSE, MCP, and library callers. Implement it only after this ADR is
-accepted, in the sequenced PRs below. Defaults are portable (no
-host-specific paths). Users can opt in to hidden or secret files.
+FUSE, MCP, and library callers. Implement it in the sequenced PRs
+below. Defaults are portable (no host-specific paths). Users can opt
+in to hidden or secret files. Owner resolutions that bind the
+sequence are in **Resolved decisions**.
 
 ### 1. Ignore / exclusion model
 
@@ -1197,18 +1198,16 @@ files when they walk a directory.
    a subproject can tighten rules). **Never walk above the index
    root** looking for `.ragfsignore` — the fork's walk to `/` is
    rejected (surprising `/` or `$HOME` files, host-specific, and
-   unlike git which stops at the repo). Optional user overlay:
-   `$RAGFS_CONFIG_DIR/ignore` (default `~/.config/ragfs/ignore`),
-   documented, not discovered by walking ancestors.
+   unlike git which stops at the repo). A user-global overlay at
+   `$RAGFS_CONFIG_DIR/ignore` is **deferred** (not in PR 2; needs
+   its own later PR if wanted).
 
 6. **`.gitignore` / `.ignore`.** Honour them *under the index root*
    when `index.honor_gitignore = true` (default **true**, matching
-   ripgrep and Cursor). Set `WalkBuilder::parents(false)` so a
-   `.gitignore` in `/` or `$HOME` is not applied. Global gitignore
-   (`git_global`) is **off** by default (host-specific). Users who
-   index a git worktree subdirectory and want the repo-root
-   `.gitignore` can set `index.honor_gitignore_parents = true`
-   (still capped: stop at the first `.git`, never at `/`).
+   ripgrep and Cursor). `WalkBuilder::parents(false)` and
+   `git_global` **off**: a `.gitignore` in `/` or `$HOME`, and the
+   user's global gitignore, are not applied. There is no
+   `honor_gitignore_parents` switch in this sequence.
 
 7. **Explicit opt-in for hidden paths.** `index.include_hidden`
    (default `false`) and CLI `--include-hidden`. Hidden opt-in does
@@ -1224,10 +1223,10 @@ files when they walk a directory.
    globs, which the `ignore` crate documents as winning first
    ([WalkBuilder ignore rules](https://docs.rs/ignore/latest/ignore/struct.WalkBuilder.html)).
    Then, among ignore files, custom `.ragfsignore` > `.ignore` >
-   `.gitignore`. `$RAGFS_CONFIG_DIR/ignore` is an extra ignore file
-   scoped to the user config dir, not an ancestor walk. CLI
-   `--include-hidden` / `include_secret_files` disable the matching
-   override; `--exclude` and `[index].exclude` always add excludes.
+   `.gitignore` (all under the index root). CLI `--include-hidden` /
+   `include_secret_files` disable the matching override; `--exclude`
+   and `[index].exclude` always add excludes. `$RAGFS_CONFIG_DIR/ignore`
+   is out of this sequence.
 
 9. **Purge on reindex.** Every `ragfs index` / mount initial scan
    (not only `--force`) deletes store rows whose `file_path` is now
@@ -1253,14 +1252,13 @@ the usual extra signal and the usual FP source.
 **Cost.** Per-file CPU on the extract path. **No measured figure is
 claimed here**; treat any later number as `TBD (to be measured)`.
 
-**Recommendation: defer. Ship path exclusion first.** Add
-`index.secret_scan = "off" | "skip" | "redact"` (default **`off`**)
-in the config schema so a later PR can implement skip without a
-second config ADR. Do not turn scanning on by default until a
-dedicated PR has fixtures (known keys vs example keys) and an owner
-decision on skip vs redact. Path denylist plus hidden exclusion
-covers the high-value files named in the review
-(`.ssh/id_rsa`, `.aws/credentials`, `.netrc`, `.npmrc`).
+**Decision: off / deferred to a later ADR and PR.** Do **not** add
+`index.secret_scan` (or any extract-time scanner) in this sequence.
+Ship path exclusion first. A later ADR must choose skip vs redact,
+add fixtures (known keys vs example keys), and only then introduce
+config. Path denylist plus hidden exclusion covers the high-value
+files named in the review (`.ssh/id_rsa`, `.aws/credentials`,
+`.netrc`, `.npmrc`).
 
 ### 3. Store integrity (model / dimension)
 
@@ -1350,10 +1348,10 @@ MCP write-jail (already shipped, [GHSA-qfm6-39c2-927v](https://github.com/gianlu
 Physical disk encryption of `~/.local/share/ragfs`.
 
 **Mitigations this design provides.** Default-deny hidden and
-secret *paths*; purge on upgrade; model-mismatch fail-closed;
-optional later content scan. Residual: user opt-in, secrets in
-non-hidden names (`notes/passwords.md`), and the plaintext index
-directory.
+secret *paths*; purge on upgrade; model-mismatch fail-closed.
+Content scanning is out of this sequence. Residual: user opt-in,
+secrets in non-hidden names (`notes/passwords.md`), and the
+plaintext index directory.
 
 ### 7. Migration, semver, advisory
 
@@ -1363,13 +1361,11 @@ error. Optional FUSE is a packaging change only if someone builds
 `--no-default-features` without noticing. Receipts/sidecar gain
 additive fields.
 
-**Semver recommendation: `0.3.0`.** v0.2.2 already shipped several
-MCP `BREAKING` notes inside 0.2.x. This change alters *what is in
-the index* for every `ragfs index` user, including `$HOME`. A minor
-bump is the 0.x signal for that. A `0.2.3` with `!` is acceptable
-if the owner wants the advisory out on the 0.2 line; justify that
-as “security fix only, no feature train.” CHANGELOG: `Security`
-section plus a `!` conventional-commit title on PR 1
+**Release: `0.3.0`.** v0.2.2 already shipped several MCP `BREAKING`
+notes inside 0.2.x. This change alters *what is in the index* for
+every `ragfs index` user, including `$HOME`. A minor bump is the
+0.x signal for that. Do **not** ship this as `0.2.3`. CHANGELOG:
+`Security` section plus a `!` conventional-commit title on PR 1
 (`fix(index)!: …`). Keep a Changelog / SemVer as today.
 
 **Upgrade notes (docs, not this PR):** re-run `ragfs index <path>`
@@ -1377,26 +1373,26 @@ once per index after upgrade (purge runs without `--force`). Use
 `--include-hidden` if the tree *is* a hidden notes dir and the user
 wants dotfiles. `--force` if the embedder id changed.
 
-**Advisory.** Publish a GitHub advisory **together with the fixing
-release**, same procedure as
+**Advisory.** Severity **moderate** (CWE-200 / local information
+disclosure of credentials via query/FUSE/MCP; default config; no
+remote unauthenticated access). Publish **together with the fixing
+release** (`0.3.0`), same procedure as
 [GHSA-qfm6-39c2-927v](https://github.com/gianlucamazza/ragfs/security/advisories/GHSA-qfm6-39c2-927v)
 (published 2026-10-20, severity **low**, MCP write-gate / allowlist
-/ bounds). Recommended severity for *this* issue: **moderate**
-(CWE-200 / local information disclosure of credentials via
-query/FUSE/MCP; default config; no remote unauthenticated access).
-Do not publish the advisory before PR 1 lands on a released tag.
+/ bounds). Do not publish the advisory before PR 1 lands on a
+released `0.3.0` tag.
 
-### 8. PR sequencing (after acceptance)
+### 8. PR sequencing
 
-One PR per row. Security first. Tests on every PR. Where fork code
-is adapted, commit trailer
+One PR per row. Security first. Tests on every PR. Target release
+**0.3.0**. Where fork code is adapted, commit trailer
 `Co-authored-by: sophie4869 <sophie4869@users.noreply.github.com>`
 and name the source commits in the PR body.
 
 | # | Title | Tests |
 |---|-------|-------|
 | **1** | `fix(index)!: exclude hidden paths and secret files by default` + `docs/community-forks.md` | Unit: `.ssh/id_rsa`, `.aws/credentials`, `.obsidian/x.md`, hidden index root `~/.notes` *kept*, `server.pem` excluded, `notes/keyboard.md` kept. CLI defaults == indexer defaults. Integration: temp tree, query via **CLI + MCP + FUSE** never returns those paths. Purge: pre-seeded chunk for an excluded path is gone after index. |
-| **2** | `feat(index): .ragfsignore` | Parse, comments, trailing `/`, nested under root, **no** read of a `/`-ancestor file. |
+| **2** | `feat(index): .ragfsignore` | Parse, comments, trailing `/`, nested under the index root, **no** read of a file above the root. **Not** `$RAGFS_CONFIG_DIR/ignore`. |
 | **3** | `fix(store): refuse a different embedding model` | Sidecar other model → error; `--force` rebuilds and rewrites sidecar; dim check still works. |
 | **4** | `fix(index): skip degenerate chunks` | `---`, `#`, whitespace dropped; short CJK kept; value in sidecar/receipt. |
 | **5** | `fix(index): log unreadable directory entries` | Unix permission-denied entry → warning, walk continues. |
@@ -1405,8 +1401,10 @@ and name the source commits in the PR body.
 | **8** | (folded into 1) community-forks credits | Entries for sophie4869/ragfs (taken / not taken / reopen) and manojtummala/SemPOSIX (ideas in #60). |
 
 `docs/community-forks.md` is created in **PR 1**, not in this ADR
-PR. Later, only on owner request and behind their own ADRs: Metal
-opt-in, `ragfs compact`, HTTP `serve` with auth on by default.
+PR. Content scanning and `$RAGFS_CONFIG_DIR/ignore` are **not** in
+this sequence. Later, only on owner request and behind their own
+ADRs: content scan, user-global ignore file, Metal opt-in,
+`ragfs compact`, HTTP `serve` with auth on by default.
 
 ### Non-goals
 
@@ -1418,6 +1416,8 @@ opt-in, `ragfs compact`, HTTP `serve` with auth on by default.
   Host check).
 - Synology / rsync helpers.
 - Docker image publishing (see `examples/docker-rag-stack`).
+- Content-level secret scanning (later ADR / PR).
+- `$RAGFS_CONFIG_DIR/ignore` (deferred; not in PR 2).
 - Implementing any of the PRs above in *this* change.
 
 ### Rationale
@@ -1451,20 +1451,23 @@ default may drop files a docs tree still wanted (opt out with
 | Content scan on by default | FP + skip/redact product choice; no fixtures yet |
 | Auto-reindex on model mismatch (fork marker file) | Surprising CPU/disk; `--force` is explicit |
 | Make hybrid opt-in to hide FTS staleness | Hides the bug; hybrid is the documented default |
-| 0.2.3 without an advisory | Default credential indexing deserves a coordinated advisory |
-| Implement in this PR | Owner has not accepted the design |
+| Ship as `0.2.3` with `!` | Owner chose `0.3.0` as the 0.x breaking signal |
+| Implement in this PR | This PR is the accepted ADR only; code follows in sequenced PRs |
 
-### Open questions (owner)
+### Resolved decisions
 
-1. Release: **0.3.0** (recommended) or **0.2.3** with `!`?
-2. Advisory severity: **moderate** (recommended) or **low** (same
-   rung as GHSA-qfm6-39c2-927v)?
-3. Confirm `index.honor_gitignore` default **true**, with
-   `parents` off?
-4. Confirm content scan stays **off** until a later PR?
-5. Nested `.ragfsignore` under the index root (recommended) vs
-   root-only?
-6. Ship `$RAGFS_CONFIG_DIR/ignore` in PR 2, or wait?
+Owner accepted this ADR on 2026-10-20:
+
+1. **Release `0.3.0`.** Not `0.2.3`.
+2. **Advisory severity MODERATE**, published together with the
+   fixing `0.3.0` release (same procedure as GHSA-qfm6-39c2-927v).
+3. **`index.honor_gitignore` default `true`.** `parents` and global
+   gitignore are **off**.
+4. **Content scan off.** Deferred to a later ADR and PR; no
+   `secret_scan` key in this sequence.
+5. **`.ragfsignore` nested under the index root.** No walk above
+   the root (including no walk to `/`).
+6. **`$RAGFS_CONFIG_DIR/ignore` deferred.** Not in PR 2.
 
 ### Sources verified
 
@@ -1496,7 +1499,7 @@ Social posts are not sources.
 | Tokio async | Concurrency, I/O efficiency |
 | Sidecar index revision + opt-in receipts | Backward-compatible audit of retrieval |
 | Transparent memory benchmark harness (Accepted) | Protocol, pins, and dual scoring before any published number |
-| Index exclusion, secret denylist, model fingerprint (Proposed) | Default-deny hidden/secret paths; fail-closed model mix |
+| Index exclusion, secret denylist, model fingerprint (Accepted) | Default-deny hidden/secret paths; fail-closed model mix |
 
 These decisions collectively create a system that is:
 - **Private**: All processing local
