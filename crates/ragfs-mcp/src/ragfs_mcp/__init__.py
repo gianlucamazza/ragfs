@@ -66,7 +66,7 @@ Configuration via environment variables:
 from .server import create_server, main, mcp
 
 __all__ = ["create_server", "main", "mcp"]
-__version__ = "1.0.0"
+__version__ = "0.3.0"
 
 
 def run() -> None:

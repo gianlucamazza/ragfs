@@ -10,6 +10,11 @@ This file tracks `ragfs-python` workspace versions. The crate is listed in
 on PyPI yet. Git tag `v0.2.0` is dated 2026-09-25 (the crate heading below
 keeps the earlier workspace date).
 
+## [0.3.0] - 2026-10-20
+
+- Align workspace release with ADR-010 index integrity changes. See the root
+  changelog and upgrade guide for breaking indexing defaults and migration.
+
 ## [0.2.2] - 2026-10-19
 
 

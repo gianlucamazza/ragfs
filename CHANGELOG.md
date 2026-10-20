@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-20
+
 ### Security and index integrity
 
 - Apply nested `.ragfsignore` rules with root-bounded precedence.
@@ -21,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking / behaviour changes
 
-- **BREAKING**: Safer default exclusions for indexing (planned 0.3.0). Hidden files *and* hidden directories under the index root are skipped; a secret-file denylist (`.env*`, `*.pem` / `*.key`, `id_rsa` / `id_ed25519`, credentials files, `.netrc` / `.npmrc` / `.pypirc`, kube config, and similar) is always on. `--include-hidden` / `index.include_hidden` does not disable that denylist. CLI, mount, MCP (via the CLI-built index), and library `IndexerConfig` share one `ignore`-crate matcher. `.gitignore` / `.ignore` under the index root are honoured by default (no parent walk, no global gitignore); `!` rules cannot re-include secrets. Every `ragfs index` purges store rows for newly excluded paths (not only `--force`). See ADR-010.
+- **BREAKING**: Safer default exclusions for indexing (0.3.0). Hidden files *and* hidden directories under the index root are skipped; a secret-file denylist (`.env*`, `*.pem` / `*.key`, `id_rsa` / `id_ed25519`, credentials files, `.netrc` / `.npmrc` / `.pypirc`, kube config, and similar) is always on. `--include-hidden` / `index.include_hidden` does not disable that denylist. CLI, mount, MCP (via the CLI-built index), and library `IndexerConfig` share one `ignore`-crate matcher. `.gitignore` / `.ignore` under the index root are honoured by default (no parent walk, no global gitignore); `!` rules cannot re-include secrets. Every `ragfs index` purges store rows for newly excluded paths (not only `--force`). See ADR-010.
 
 ### Added
 

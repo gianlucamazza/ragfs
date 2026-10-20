@@ -12,7 +12,7 @@ only (not measurements).
 
 **Implementation baseline (updated 2026-10-20):**
 
-- Workspace version: `0.2.2` (`Cargo.toml` `[workspace.package]`).
+- Workspace version: `0.3.0` (`Cargo.toml` `[workspace.package]`).
 - Default CLI features: `candle` + `lancedb` + `mount`. `full` adds `vision`.
   `ragfs-fuse` and `fuser` are optional through the default-on `mount` feature.
 - LanceDB pin: `lancedb = "0.37.1"` (workspace `Cargo.toml`; 0.38.0 skipped on
@@ -139,7 +139,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 
 | Field | Value |
 |-------|--------|
-| Status | Implemented in #207; CI/merge gate |
+| Status | Implemented in #207 |
 | Issue | (#180) |
 | Size | M (~250–500 LOC) |
 | Gate | CoS merge |
@@ -165,7 +165,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 
 | Field | Value |
 |-------|--------|
-| Status | Implemented in #207; CI/merge gate |
+| Status | Implemented in #207 |
 | Issue | (#181) |
 | Size | M (~200–400 LOC) |
 | Gate | CoS merge |
@@ -200,7 +200,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 
 | Field | Value |
 |-------|--------|
-| Status | Implemented in #207; CI/merge gate |
+| Status | Implemented in #207 |
 | Issue | (#182) |
 | Size | S (~150–300 LOC) |
 | Gate | CoS merge |
@@ -224,7 +224,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 
 | Field | Value |
 |-------|--------|
-| Status | Implemented in #207; CI/merge gate |
+| Status | Implemented in #207 |
 | Issue | (#183) |
 | Size | S (~50–150 LOC) |
 | Gate | CoS merge |
@@ -246,7 +246,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 
 | Field | Value |
 |-------|--------|
-| Status | Implemented in #207; CI/merge gate |
+| Status | Implemented in #207 |
 | Issue | (#184) |
 | Size | S (~100–250 LOC); M (~+100–300) only if the test fails and FTS must be refreshed |
 | Gate | CoS merge |
@@ -271,7 +271,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 
 | Field | Value |
 |-------|--------|
-| Status | Implemented in #207; CI/merge gate |
+| Status | Implemented in #207 |
 | Issue | (#185) |
 | Size | M (~200–400 LOC, mostly Cargo + CI + CLI error path) |
 | Gate | CoS merge |
@@ -295,7 +295,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 
 | Field | Value |
 |-------|--------|
-| Status | Draft release #208 |
+| Status | Release preparation #208 |
 | Issue | (#186) |
 | Size | S (CHANGELOG + version bump across workspace / Python packages; follow the 0.2.2 release-prep pattern) |
 | Gate | **Gianluca** |
@@ -987,8 +987,8 @@ stays `gte-small`.
 - #206: merged as `9bc1bfd`; required CI and Python tests passed.
 - #207: implementation for #180–#185, including nested ignore, model fingerprint,
   Unicode chunk floor, traversal diagnostics, FTS regression and optional mount.
-  Status: implemented, awaiting full CI and merge. Merge #206 first.
-- #186 / #208: draft 0.3.0 release follows both PRs; never publish these changes as 0.2.3.
-- #176: superseded for this sequence by the 0.3.0 release preparation.
+  Required CI and Python checks are the merge gate; local suite: 163 tests passed.
+- #186 / #208: 0.3.0 release follows both PRs; never publish these changes as 0.2.3.
+- #176 and #209: superseded for this sequence by the 0.3.0 release preparation.
 - ADR-011 and ADR-009 remain subsequent work with the dependencies above. No
   benchmark measurements or multimodal completion are claimed by these PRs.
