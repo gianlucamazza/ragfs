@@ -1,0 +1,13 @@
+schema_version = 1
+protocol_id = "ragfs-versioned-facts-v0"
+dataset = "versioned-facts-v0"
+pins = "pins.toml"
+seed = 0
+systems = ["bm25", "vector", "ragfs"]
+
+[query]
+k = 5
+hybrid = true
+
+[judge]
+enabled = false

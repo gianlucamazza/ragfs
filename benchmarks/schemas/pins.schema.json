@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gianlucamazza.github.io/ragfs/benchmarks/pins.schema.json",
+  "type": "object",
+  "properties": {
+    "pins": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uri": {
+            "type": "string",
+            "minLength": 1
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "license": {
+            "type": "string",
+            "minLength": 1
+          },
+          "revision": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40,64}$"
+          },
+          "git_commit": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40,64}$"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "name",
+          "uri",
+          "path",
+          "license",
+          "sha256"
+        ],
+        "anyOf": [
+          {
+            "required": [
+              "git_commit"
+            ]
+          },
+          {
+            "required": [
+              "revision"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "required": [
+    "pins"
+  ]
+}
