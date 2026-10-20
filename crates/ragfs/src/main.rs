@@ -260,6 +260,10 @@ async fn create_components(
     Arc<ChunkerRegistry>,
     Arc<EmbedderPool>,
 )> {
+    #[cfg(not(feature = "vision"))]
+    if for_indexing && config.index.image_captioning {
+        anyhow::bail!("index.image_captioning requires a build with --features vision");
+    }
     let db_path = get_db_path(&source)?;
 
     // Embedder first: store width and sidecar model id come from it.
@@ -305,6 +309,24 @@ async fn create_components(
     extractors.register("pdf", PdfExtractor::new());
     extractors.register("image", ImageExtractor::new());
     extractors.register("office", OfficeExtractor::new());
+    if for_indexing && config.index.image_captioning {
+        #[cfg(feature = "vision")]
+        {
+            use ragfs_extract::ImageCaptioner;
+            let captioner = Arc::new(ragfs_extract::BlipCaptioner::new(
+                data_dir()
+                    .context("Failed to get data directory")?
+                    .join("models"),
+            ));
+            captioner
+                .init()
+                .await
+                .context("Failed to initialize image captioner")?;
+            extractors.set_captioner(captioner);
+        }
+        #[cfg(not(feature = "vision"))]
+        anyhow::bail!("index.image_captioning requires a build with --features vision");
+    }
     let extractors = Arc::new(extractors);
 
     let mut chunkers = ChunkerRegistry::new();

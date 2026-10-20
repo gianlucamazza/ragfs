@@ -518,3 +518,22 @@ Such a binary reports `built without mount` for the mount command.
 If a table rebuild is interrupted, `rebuild_in_progress` in the sidecar keeps
 subsequent opens blocked. Repeat `ragfs index <path> --force` to recover; an
 incomplete rebuild is never treated as a valid empty index.
+
+## Image captions (ADR-011 phase 1)
+
+`[index].image_captioning = false` by default. With a binary built using
+`--features vision`, set it to `true` to initialize the existing local BLIP
+captioner for standalone images and embedded PDF images. Without `vision`,
+enabling the setting is an error. Queries do not initialize the captioner.
+The first opt-in initialization can download BLIP weights; no new model is added.
+
+Captions are indexed as `ImageCaption` text chunks with gte-small. Without a
+caption, standalone filename/dimensions and PDF image/page metadata remain
+searchable. Media-derived chunks have no text-file offsets (`0..0`, no lines).
+This does not implement native image-vector search, OCR, audio, or video.
+
+Images are limited to 40 million pixels before standalone decode or captioning;
+PDF image dimensions are also bounded before decompression. The existing 50 MiB
+file-size and PDF image-count/byte limits still apply. Reindex with `--force`
+after changing caption settings or upgrading an existing image index: the
+content hash alone does not detect a changed extraction policy.

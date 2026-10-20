@@ -219,6 +219,9 @@ pub struct MountConfig {
 /// Index-related configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexConfig {
+    /// Enable BLIP captions (requires the vision feature); rebuild after changing.
+    #[serde(default)]
+    pub image_captioning: bool,
     /// File patterns to include
     #[serde(default = "default_include")]
     pub include: Vec<String>,
@@ -277,6 +280,7 @@ fn default_debounce_ms() -> u64 {
 impl Default for IndexConfig {
     fn default() -> Self {
         Self {
+            image_captioning: false,
             include: default_include(),
             exclude: default_exclude(),
             max_file_size: default_max_file_size(),

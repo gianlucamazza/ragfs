@@ -163,6 +163,13 @@ fn decode_pdf_image(
     page_num: u32,
     budget: usize,
 ) -> Option<ExtractedImage> {
+    if pdf_image.width <= 0
+        || pdf_image.height <= 0
+        || (pdf_image.width as u64).saturating_mul(pdf_image.height as u64)
+            > crate::image::MAX_IMAGE_PIXELS
+    {
+        return None;
+    }
     let filters = pdf_image.filters.as_ref()?;
 
     // Determine MIME type and decode based on filter
