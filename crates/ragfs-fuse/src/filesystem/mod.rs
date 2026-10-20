@@ -280,7 +280,7 @@ impl RagFs {
     }
 
     /// Execute a query and return results as JSON.
-    fn execute_query(&self, query: &str) -> Vec<u8> {
+    pub(crate) fn execute_query(&self, query: &str) -> Vec<u8> {
         if let Some(ref executor) = self.query_executor {
             let executor = executor.clone();
             let query_str = query.to_string();
@@ -1005,5 +1005,116 @@ mod tests {
 
         assert_eq!(attr.uid, expected_uid);
         assert_eq!(attr.gid, expected_gid);
+    }
+
+    /// Mount path: `IndexerService::start` (same as `ragfs mount`) + FUSE `.query`.
+    #[tokio::test]
+    async fn mount_index_and_query_exclude_hidden_and_secrets() {
+        use ragfs_chunker::{ChunkerRegistry, FixedSizeChunker};
+        use ragfs_core::{
+            EmbedError, Embedder, EmbeddingConfig, EmbeddingOutput, Indexer, Modality, VectorStore,
+        };
+        use ragfs_embed::EmbedderPool;
+        use ragfs_extract::{ExtractorRegistry, TextExtractor};
+        use ragfs_index::{IndexerConfig, IndexerService};
+        use ragfs_store::MemoryStore;
+        use std::sync::Arc;
+
+        struct ConstantEmbedder;
+
+        #[async_trait::async_trait]
+        impl Embedder for ConstantEmbedder {
+            fn model_name(&self) -> &str {
+                "test-constant"
+            }
+            fn dimension(&self) -> usize {
+                8
+            }
+            fn max_tokens(&self) -> usize {
+                512
+            }
+            fn modalities(&self) -> &[Modality] {
+                &[Modality::Text]
+            }
+            async fn embed_text(
+                &self,
+                texts: &[&str],
+                _config: &EmbeddingConfig,
+            ) -> std::result::Result<Vec<EmbeddingOutput>, EmbedError> {
+                Ok(texts
+                    .iter()
+                    .map(|_| EmbeddingOutput {
+                        embedding: vec![0.1; 8],
+                        token_count: 4,
+                    })
+                    .collect())
+            }
+        }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path();
+        std::fs::write(root.join("keyboard.md"), "VISIBLE_TOKEN keyboard shortcuts").unwrap();
+        std::fs::write(root.join("server.pem"), "SECRETPEM_TOKEN private cert").unwrap();
+        std::fs::create_dir(root.join(".obsidian")).unwrap();
+        std::fs::write(root.join(".obsidian").join("x.md"), "HIDDENDIR_TOKEN").unwrap();
+        std::fs::write(root.join(".hidden.md"), "HIDDENFILE_TOKEN").unwrap();
+        std::fs::create_dir(root.join(".ssh")).unwrap();
+        std::fs::write(root.join(".ssh").join("id_rsa"), "SSHKEY_TOKEN").unwrap();
+
+        let store = Arc::new(MemoryStore::new(8));
+        let mut extractors = ExtractorRegistry::new();
+        extractors.register("text", TextExtractor::new());
+        let mut chunkers = ChunkerRegistry::new();
+        chunkers.register("fixed", FixedSizeChunker::new());
+        chunkers.set_default("fixed");
+        let embedder: Arc<dyn Embedder> = Arc::new(ConstantEmbedder);
+        let pool = Arc::new(EmbedderPool::new(Arc::clone(&embedder), 1));
+
+        let indexer = IndexerService::new(
+            root.to_path_buf(),
+            store.clone() as Arc<dyn VectorStore>,
+            Arc::new(extractors),
+            Arc::new(chunkers),
+            pool,
+            IndexerConfig::default(),
+        );
+        indexer.start().await.unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            indexer.wait_until_idle(),
+        )
+        .await
+        .expect("mount initial scan should idle");
+
+        let files = store.get_all_files().await.unwrap();
+        assert_eq!(files.len(), 1, "mount scan indexes only the visible note");
+        assert!(files[0].path.ends_with("keyboard.md"));
+
+        let fs = RagFs::with_rag_query(
+            root.to_path_buf(),
+            store.clone() as Arc<dyn VectorStore>,
+            embedder,
+            tokio::runtime::Handle::current(),
+            None,
+            10,
+            false,
+            100,
+        );
+        // execute_query uses Handle::block_on; call it off the test runtime.
+        let json: serde_json::Value = tokio::task::spawn_blocking(move || {
+            serde_json::from_slice(&fs.execute_query("keyboard")).expect("query JSON")
+        })
+        .await
+        .expect("execute_query should run off the async worker");
+        let blob = json.to_string();
+        assert!(
+            !blob.contains("server.pem")
+                && !blob.contains("SECRETPEM")
+                && !blob.contains("id_rsa")
+                && !blob.contains(".obsidian")
+                && !blob.contains(".hidden.md"),
+            "FUSE .query must not return excluded paths: {blob}"
+        );
+        indexer.stop().await.unwrap();
     }
 }

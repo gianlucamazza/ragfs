@@ -15,6 +15,7 @@ use tokio::sync::{Notify, RwLock, broadcast, mpsc};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
+use crate::exclude::{ExclusionMatcher, ExclusionOptions, default_exclude_patterns};
 use crate::watcher::FileWatcher;
 
 /// Index update events.
@@ -43,6 +44,16 @@ pub struct IndexerConfig {
     pub max_file_size: u64,
     /// Skip the content-hash short-circuit and reindex every eligible file
     pub force: bool,
+    /// Index hidden files and directories under the root (`--include-hidden`).
+    /// Does not disable the secret-file denylist.
+    pub include_hidden: bool,
+    /// Index files that match the built-in secret denylist.
+    pub include_secret_files: bool,
+    /// Honour `.gitignore` / `.ignore` under the index root only (no parents,
+    /// no global gitignore).
+    pub honor_gitignore: bool,
+    /// Delete store rows whose paths are now excluded, on every index/scan.
+    pub purge_excluded: bool,
 }
 
 impl Default for IndexerConfig {
@@ -51,39 +62,49 @@ impl Default for IndexerConfig {
             chunk_config: ChunkConfig::default(),
             embed_config: EmbeddingConfig::default(),
             include_patterns: vec!["**/*".to_string()],
-            exclude_patterns: vec![
-                "**/.*".to_string(),
-                "**/.git/**".to_string(),
-                "**/node_modules/**".to_string(),
-                "**/target/**".to_string(),
-                "**/__pycache__/**".to_string(),
-                "**/*.lock".to_string(),
-            ],
+            exclude_patterns: default_exclude_patterns(),
             debounce_ms: 500,
             max_file_size: 52_428_800,
             force: false,
+            include_hidden: false,
+            include_secret_files: false,
+            honor_gitignore: true,
+            purge_excluded: true,
         }
     }
 }
 
 impl IndexerConfig {
-    /// Whether `path` is eligible for indexing given include/exclude patterns.
+    /// Options consumed by [`ExclusionMatcher`].
+    #[must_use]
+    pub fn exclusion_options(&self) -> ExclusionOptions {
+        ExclusionOptions {
+            include_hidden: self.include_hidden,
+            include_secret_files: self.include_secret_files,
+            honor_gitignore: self.honor_gitignore,
+            extra_excludes: self.exclude_patterns.clone(),
+            include_patterns: self.include_patterns.clone(),
+        }
+    }
+
+    /// Matcher bound to `root` (hidden-root exception, secrets, gitignore).
+    #[must_use]
+    pub fn matcher(&self, root: &Path) -> ExclusionMatcher {
+        ExclusionMatcher::new(root, self.exclusion_options())
+    }
+
+    /// Whether `path` is eligible when the index root is unknown.
+    ///
+    /// Prefer [`Self::should_process_path_in`] so a hidden index root is kept.
     #[must_use]
     pub fn should_process_path(&self, path: &Path) -> bool {
-        let path_str = path.to_string_lossy();
-        if self
-            .exclude_patterns
-            .iter()
-            .any(|pattern| path_matches_pattern(&path_str, pattern))
-        {
-            return false;
-        }
-        if self.include_patterns.is_empty() {
-            return true;
-        }
-        self.include_patterns
-            .iter()
-            .any(|pattern| path_matches_pattern(&path_str, pattern))
+        self.should_process_path_in(path, Path::new("/"))
+    }
+
+    /// Whether `path` is eligible under `root`.
+    #[must_use]
+    pub fn should_process_path_in(&self, path: &Path, root: &Path) -> bool {
+        self.matcher(root).should_process(path)
     }
 }
 
@@ -271,11 +292,19 @@ impl IndexerService {
         // Initialize store
         self.store.init().await.map_err(Error::Store)?;
 
-        // Start file watcher (debounce from config)
-        let watcher = FileWatcher::with_pending(
+        // Purge before starting background work; failure must not report a
+        // successful upgrade while excluded content remains searchable.
+        if let Err(error) = self.purge_excluded_files().await {
+            *self.running.write().await = false;
+            return Err(error);
+        }
+
+        // Start file watcher (debounce from config). Same matcher as the scan.
+        let watcher = FileWatcher::with_filter(
             self.event_tx.clone(),
             std::time::Duration::from_millis(self.config.debounce_ms),
             Some(Arc::clone(&self.pending)),
+            Some(Arc::new(self.config.matcher(&self.root))),
         )
         .map_err(|e| Error::Other(format!("watcher error: {e}")))?;
         {
@@ -411,25 +440,41 @@ impl IndexerService {
         Ok(())
     }
 
+    /// Delete store rows whose paths are now excluded (every index, not only `--force`).
+    async fn purge_excluded_files(&self) -> Result<()> {
+        if !self.config.purge_excluded {
+            return Ok(());
+        }
+        let files = self.store.get_all_files().await.map_err(Error::Store)?;
+        let matcher = self.config.matcher(&self.root);
+        for file in files {
+            if matcher.should_process(&file.path) {
+                continue;
+            }
+            info!("Purging excluded path {:?}", file.path);
+            self.store
+                .delete_by_file_path(&file.path)
+                .await
+                .map_err(Error::Store)?;
+            let _ = self.update_tx.send(IndexUpdate::FileRemoved {
+                path: file.path.clone(),
+            });
+        }
+        Ok(())
+    }
+
     /// Perform initial scan of the root directory.
     async fn scan(&self) -> Result<()> {
         info!("Scanning {:?}", self.root);
 
         let root = self.root.clone();
         let event_tx = self.event_tx.clone();
-        let exclude_patterns = self.config.exclude_patterns.clone();
-        let include_patterns = self.config.include_patterns.clone();
+        let config = self.config.clone();
         let pending = Arc::clone(&self.pending);
 
         // Walk directory in background thread (blocking I/O)
         tokio::task::spawn_blocking(move || {
-            scan_directory(
-                &root,
-                &event_tx,
-                &exclude_patterns,
-                &include_patterns,
-                &pending,
-            );
+            scan_directory(&root, &event_tx, &config, &pending);
         })
         .await
         .map_err(|e| Error::Other(format!("scan task failed: {e}")))?;
@@ -521,18 +566,13 @@ impl IndexerService {
             let path = entry.path();
 
             if path.is_dir() {
-                if self
-                    .config
-                    .exclude_patterns
-                    .iter()
-                    .any(|pattern| path_matches_pattern(&path.to_string_lossy(), pattern))
-                {
+                if !self.config.matcher(&self.root).should_descend(&path) {
                     continue;
                 }
                 // Recurse into subdirectory using a boxed future to avoid infinite recursion
                 Box::pin(self.reindex_directory(&path)).await?;
             } else if path.is_file() {
-                if !self.config.should_process_path(&path) {
+                if !self.config.should_process_path_in(&path, &self.root) {
                     continue;
                 }
                 // Reindex file - use process_file directly to avoid recursion
@@ -580,54 +620,13 @@ impl IndexerService {
 fn scan_directory(
     root: &Path,
     event_tx: &mpsc::Sender<FileEvent>,
-    exclude_patterns: &[String],
-    include_patterns: &[String],
+    config: &IndexerConfig,
     pending: &AtomicUsize,
 ) {
-    use std::fs;
-
-    fn visit_dir(
-        dir: &Path,
-        event_tx: &mpsc::Sender<FileEvent>,
-        exclude_patterns: &[String],
-        include_patterns: &[String],
-        pending: &AtomicUsize,
-    ) {
-        let entries = match fs::read_dir(dir) {
-            Ok(e) => e,
-            Err(e) => {
-                warn!("Cannot read directory {:?}: {}", dir, e);
-                return;
-            }
-        };
-
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let path_str = path.to_string_lossy();
-
-            if exclude_patterns
-                .iter()
-                .any(|pattern| path_matches_pattern(&path_str, pattern))
-            {
-                continue;
-            }
-
-            if path.is_dir() {
-                visit_dir(&path, event_tx, exclude_patterns, include_patterns, pending);
-            } else if path.is_file() {
-                let included = include_patterns.is_empty()
-                    || include_patterns
-                        .iter()
-                        .any(|pattern| path_matches_pattern(&path_str, pattern));
-                if !included {
-                    continue;
-                }
-                queue_event_blocking(event_tx, pending, FileEvent::Created(path));
-            }
-        }
+    let matcher = config.matcher(root);
+    for path in matcher.collect_files() {
+        queue_event_blocking(event_tx, pending, FileEvent::Created(path));
     }
-
-    visit_dir(root, event_tx, exclude_patterns, include_patterns, pending);
 }
 
 fn queue_event_blocking(
@@ -668,8 +667,14 @@ async fn process_file(
         return Ok(0);
     }
 
-    if !config.should_process_path(path) {
+    if !config.should_process_path_in(path, root) {
         debug!("Skipping {:?} (include/exclude patterns)", path);
+        if config.purge_excluded {
+            store
+                .delete_by_file_path(path)
+                .await
+                .map_err(Error::Store)?;
+        }
         return Ok(0);
     }
 
@@ -680,7 +685,10 @@ async fn process_file(
             metadata.len(),
             config.max_file_size
         );
-        let _ = store.delete_by_file_path(path).await;
+        store
+            .delete_by_file_path(path)
+            .await
+            .map_err(Error::Store)?;
         return Ok(0);
     }
 
@@ -763,7 +771,10 @@ async fn process_file(
     let chunk_count = chunks.len() as u32;
 
     // Delete old chunks for this file
-    let _ = store.delete_by_file_path(path).await;
+    store
+        .delete_by_file_path(path)
+        .await
+        .map_err(Error::Store)?;
 
     // Store chunks
     store.upsert_chunks(&chunks).await.map_err(Error::Store)?;
@@ -1036,6 +1047,7 @@ mod tests {
     // ==================== Mock VectorStore ====================
 
     struct MockStore {
+        fail_delete: bool,
         chunks: Arc<RwLock<Vec<Chunk>>>,
         files: Arc<RwLock<HashMap<PathBuf, FileRecord>>>,
     }
@@ -1043,6 +1055,7 @@ mod tests {
     impl MockStore {
         fn new() -> Self {
             Self {
+                fail_delete: false,
                 chunks: Arc::new(RwLock::new(Vec::new())),
                 files: Arc::new(RwLock::new(HashMap::new())),
             }
@@ -1078,6 +1091,9 @@ mod tests {
         }
 
         async fn delete_by_file_path(&self, path: &Path) -> std::result::Result<u64, StoreError> {
+            if self.fail_delete {
+                return Err(StoreError::Init("injected delete failure".into()));
+            }
             let mut chunks = self.chunks.write().await;
             let initial_len = chunks.len();
             chunks.retain(|c| c.file_path != path);
@@ -1305,7 +1321,7 @@ mod tests {
 
     // ==================== IndexerService tests ====================
 
-    fn create_test_indexer(store: Arc<dyn VectorStore>) -> IndexerService {
+    fn create_test_indexer(store: Arc<dyn VectorStore>, root: &Path) -> IndexerService {
         use ragfs_extract::TextExtractor;
 
         let mut extractors = ExtractorRegistry::new();
@@ -1323,7 +1339,7 @@ mod tests {
         let config = IndexerConfig::default();
 
         IndexerService::new(
-            PathBuf::from("/tmp"),
+            root.to_path_buf(),
             store,
             extractors,
             chunkers,
@@ -1339,7 +1355,8 @@ mod tests {
         std::fs::write(&file_path, "This is test content for indexing.").unwrap();
 
         let store = Arc::new(MockStore::new());
-        let indexer = create_test_indexer(Arc::clone(&store) as Arc<dyn VectorStore>);
+        let indexer =
+            create_test_indexer(Arc::clone(&store) as Arc<dyn VectorStore>, temp_dir.path());
 
         let chunk_count = indexer.process_single(&file_path).await.unwrap();
 
@@ -1365,7 +1382,8 @@ mod tests {
         std::fs::write(&file_path, "Test content").unwrap();
 
         let store = Arc::new(MockStore::new());
-        let indexer = create_test_indexer(Arc::clone(&store) as Arc<dyn VectorStore>);
+        let indexer =
+            create_test_indexer(Arc::clone(&store) as Arc<dyn VectorStore>, temp_dir.path());
 
         // First indexing
         let chunk_count1 = indexer.process_single(&file_path).await.unwrap();
@@ -1392,7 +1410,8 @@ mod tests {
         std::fs::write(&file_path, "New content").unwrap();
 
         let store = Arc::new(MockStore::new());
-        let indexer = create_test_indexer(Arc::clone(&store) as Arc<dyn VectorStore>);
+        let indexer =
+            create_test_indexer(Arc::clone(&store) as Arc<dyn VectorStore>, temp_dir.path());
 
         // File not in store should need reindex
         let needs = indexer.needs_reindex(&file_path).await.unwrap();
@@ -1406,7 +1425,8 @@ mod tests {
         std::fs::write(&file_path, "Unchanged content").unwrap();
 
         let store = Arc::new(MockStore::new());
-        let indexer = create_test_indexer(Arc::clone(&store) as Arc<dyn VectorStore>);
+        let indexer =
+            create_test_indexer(Arc::clone(&store) as Arc<dyn VectorStore>, temp_dir.path());
 
         // Index the file first
         indexer.process_single(&file_path).await.unwrap();
@@ -1423,7 +1443,8 @@ mod tests {
         std::fs::write(&file_path, "Original content").unwrap();
 
         let store = Arc::new(MockStore::new());
-        let indexer = create_test_indexer(Arc::clone(&store) as Arc<dyn VectorStore>);
+        let indexer =
+            create_test_indexer(Arc::clone(&store) as Arc<dyn VectorStore>, temp_dir.path());
 
         // Index the file
         indexer.process_single(&file_path).await.unwrap();
@@ -1443,7 +1464,8 @@ mod tests {
         std::fs::write(&file_path, "Original content for reindex test").unwrap();
 
         let store = Arc::new(MockStore::new());
-        let indexer = create_test_indexer(Arc::clone(&store) as Arc<dyn VectorStore>);
+        let indexer =
+            create_test_indexer(Arc::clone(&store) as Arc<dyn VectorStore>, temp_dir.path());
 
         // Index initially
         indexer.process_single(&file_path).await.unwrap();
@@ -1469,7 +1491,8 @@ mod tests {
         std::fs::write(&file_path, "").unwrap();
 
         let store = Arc::new(MockStore::new());
-        let indexer = create_test_indexer(Arc::clone(&store) as Arc<dyn VectorStore>);
+        let indexer =
+            create_test_indexer(Arc::clone(&store) as Arc<dyn VectorStore>, temp_dir.path());
 
         let chunk_count = indexer.process_single(&file_path).await.unwrap();
 
@@ -1495,9 +1518,18 @@ mod tests {
                 .exclude_patterns
                 .contains(&"**/target/**".to_string())
         );
+        assert_eq!(
+            config.exclude_patterns,
+            crate::exclude::default_exclude_patterns()
+        );
+        assert!(!config.exclude_patterns.iter().any(|p| p == "**/.*"));
         assert_eq!(config.debounce_ms, 500);
         assert_eq!(config.max_file_size, 52_428_800);
         assert!(!config.force);
+        assert!(!config.include_hidden);
+        assert!(!config.include_secret_files);
+        assert!(config.honor_gitignore);
+        assert!(config.purge_excluded);
     }
 
     #[test]
@@ -1513,7 +1545,7 @@ mod tests {
         assert!(path_matches_pattern("/proj/.env", "**/.*"));
         assert!(
             !path_matches_pattern("/tmp/.tmpABC/file.txt", "**/.*"),
-            "hidden parent dirs must not exclude a visible file"
+            "path_matches_pattern keeps the old **/.* basename shim; hidden dirs are ExclusionMatcher"
         );
         assert!(!path_matches_pattern(
             "/proj/src/main.rs",
@@ -1550,6 +1582,7 @@ mod tests {
     fn create_test_indexer_with_config(
         store: Arc<dyn VectorStore>,
         config: IndexerConfig,
+        root: &Path,
     ) -> IndexerService {
         use ragfs_extract::TextExtractor;
 
@@ -1566,7 +1599,7 @@ mod tests {
         let embedder_pool = Arc::new(EmbedderPool::new(embedder, 1));
 
         IndexerService::new(
-            PathBuf::from("/tmp"),
+            root.to_path_buf(),
             store,
             extractors,
             chunkers,
@@ -1586,8 +1619,11 @@ mod tests {
             max_file_size: 8,
             ..Default::default()
         };
-        let indexer =
-            create_test_indexer_with_config(Arc::clone(&store) as Arc<dyn VectorStore>, config);
+        let indexer = create_test_indexer_with_config(
+            Arc::clone(&store) as Arc<dyn VectorStore>,
+            config,
+            temp_dir.path(),
+        );
 
         let chunk_count = indexer.process_single(&file_path).await.unwrap();
         assert_eq!(chunk_count, 0);
@@ -1602,7 +1638,8 @@ mod tests {
         std::fs::write(&file_path, "small").unwrap();
 
         let store = Arc::new(MockStore::new());
-        let indexer = create_test_indexer(Arc::clone(&store) as Arc<dyn VectorStore>);
+        let indexer =
+            create_test_indexer(Arc::clone(&store) as Arc<dyn VectorStore>, temp_dir.path());
         let chunk_count = indexer.process_single(&file_path).await.unwrap();
         assert!(chunk_count > 0);
         assert!(store.files.read().await.contains_key(&file_path));
@@ -1614,8 +1651,11 @@ mod tests {
             max_file_size: 8,
             ..Default::default()
         };
-        let limited_indexer =
-            create_test_indexer_with_config(Arc::clone(&store) as Arc<dyn VectorStore>, limited);
+        let limited_indexer = create_test_indexer_with_config(
+            Arc::clone(&store) as Arc<dyn VectorStore>,
+            limited,
+            temp_dir.path(),
+        );
         let skipped = limited_indexer.process_single(&file_path).await.unwrap();
         assert_eq!(skipped, 0);
         assert!(
@@ -1635,7 +1675,8 @@ mod tests {
         std::fs::write(&file_path, "unchanged payload").unwrap();
 
         let store = Arc::new(MockStore::new());
-        let indexer = create_test_indexer(Arc::clone(&store) as Arc<dyn VectorStore>);
+        let indexer =
+            create_test_indexer(Arc::clone(&store) as Arc<dyn VectorStore>, temp_dir.path());
         indexer.process_single(&file_path).await.unwrap();
         let first_id = store.files.read().await.get(&file_path).unwrap().id;
 
@@ -1651,6 +1692,7 @@ mod tests {
         let force_indexer = create_test_indexer_with_config(
             Arc::clone(&store) as Arc<dyn VectorStore>,
             force_config,
+            temp_dir.path(),
         );
         force_indexer.process_single(&file_path).await.unwrap();
         let forced_id = store.files.read().await.get(&file_path).unwrap().id;
@@ -1722,8 +1764,11 @@ mod tests {
             },
             ..Default::default()
         };
-        let indexer =
-            create_test_indexer_with_config(Arc::clone(&store) as Arc<dyn VectorStore>, config);
+        let indexer = create_test_indexer_with_config(
+            Arc::clone(&store) as Arc<dyn VectorStore>,
+            config,
+            temp_dir.path(),
+        );
 
         let chunk_count = indexer.process_single(&file_path).await.unwrap();
         assert!(
@@ -1735,7 +1780,10 @@ mod tests {
     #[tokio::test]
     async fn test_subscribe_receives_updates() {
         let store = Arc::new(MockStore::new());
-        let indexer = create_test_indexer(Arc::clone(&store) as Arc<dyn VectorStore>);
+        let indexer = create_test_indexer(
+            Arc::clone(&store) as Arc<dyn VectorStore>,
+            Path::new("/tmp"),
+        );
 
         let mut receiver = indexer.subscribe();
 
@@ -1767,5 +1815,186 @@ mod tests {
         let _started = IndexUpdate::IndexingStarted {
             path: PathBuf::from("/test"),
         };
+    }
+
+    async fn seed_file(store: &MockStore, path: &Path, content: &str) {
+        let now = Utc::now();
+        let file_id = Uuid::new_v4();
+        let record = FileRecord {
+            id: file_id,
+            path: path.to_path_buf(),
+            size_bytes: content.len() as u64,
+            mime_type: "text/plain".to_string(),
+            content_hash: "seeded".to_string(),
+            modified_at: now,
+            indexed_at: Some(now),
+            chunk_count: 1,
+            status: FileStatus::Indexed,
+            error_message: None,
+        };
+        let chunk = Chunk {
+            id: Uuid::new_v4(),
+            file_id,
+            file_path: path.to_path_buf(),
+            content: content.to_string(),
+            content_type: ContentType::Text,
+            mime_type: Some("text/plain".to_string()),
+            chunk_index: 0,
+            byte_range: 0..content.len() as u64,
+            line_range: None,
+            parent_chunk_id: None,
+            depth: 0,
+            embedding: Some(vec![0.1; TEST_DIM]),
+            dir_path: String::new(),
+            dir_depth: 0,
+            path_components: path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            metadata: ChunkMetadata::default(),
+        };
+        store.upsert_file(&record).await.unwrap();
+        store.upsert_chunks(&[chunk]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_scan_excludes_hidden_secret_and_keeps_visible() {
+        let temp_dir = tempdir().unwrap();
+        let root = temp_dir.path();
+        std::fs::write(root.join("keyboard.md"), "notes keyboard shortcuts").unwrap();
+        std::fs::write(root.join("server.pem"), "SECRETPEM leaked cert").unwrap();
+        std::fs::create_dir(root.join(".obsidian")).unwrap();
+        std::fs::write(root.join(".obsidian").join("x.md"), "obsidian workspace").unwrap();
+        std::fs::write(root.join(".hidden.md"), "hidden file token").unwrap();
+        std::fs::create_dir(root.join(".ssh")).unwrap();
+        std::fs::write(root.join(".ssh").join("id_rsa"), "ssh private key").unwrap();
+
+        let store = Arc::new(MockStore::new());
+        let indexer = create_test_indexer(Arc::clone(&store) as Arc<dyn VectorStore>, root);
+        indexer.start().await.unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            indexer.wait_until_idle(),
+        )
+        .await
+        .expect("indexer should become idle");
+
+        let files = store.get_all_files().await.unwrap();
+        let paths: Vec<_> = files.iter().map(|f| f.path.clone()).collect();
+        assert_eq!(files.len(), 1, "only the visible note: {paths:?}");
+        assert!(paths[0].ends_with("keyboard.md"));
+        indexer.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_purge_excluded_on_every_index() {
+        let temp_dir = tempdir().unwrap();
+        let root = temp_dir.path();
+        std::fs::write(root.join("note.md"), "visible note").unwrap();
+        let secret = root.join("server.pem");
+        std::fs::write(&secret, "SECRETPEM leaked cert").unwrap();
+
+        let store = Arc::new(MockStore::new());
+        seed_file(&store, &secret, "SECRETPEM leaked cert").await;
+        assert!(store.get_file(&secret).await.unwrap().is_some());
+        assert!(!store.get_all_chunks().await.unwrap().is_empty());
+
+        let indexer = create_test_indexer(Arc::clone(&store) as Arc<dyn VectorStore>, root);
+        indexer.start().await.unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            indexer.wait_until_idle(),
+        )
+        .await
+        .expect("indexer should become idle");
+
+        assert!(
+            store.get_file(&secret).await.unwrap().is_none(),
+            "excluded secret must be purged without --force"
+        );
+        assert!(
+            store
+                .get_all_chunks()
+                .await
+                .unwrap()
+                .iter()
+                .all(|c| c.file_path != secret),
+            "purged secret chunks must be gone"
+        );
+        let files = store.get_all_files().await.unwrap();
+        assert_eq!(files.len(), 1);
+        assert!(files[0].path.ends_with("note.md"));
+        indexer.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_include_hidden_still_blocks_secrets() {
+        let temp_dir = tempdir().unwrap();
+        let root = temp_dir.path();
+        std::fs::write(root.join(".notes.md"), "dotfile content").unwrap();
+        std::fs::write(root.join("server.pem"), "SECRETPEM leaked cert").unwrap();
+
+        let store = Arc::new(MockStore::new());
+        let config = IndexerConfig {
+            include_hidden: true,
+            ..Default::default()
+        };
+        let indexer = create_test_indexer_with_config(
+            Arc::clone(&store) as Arc<dyn VectorStore>,
+            config,
+            root,
+        );
+        indexer.start().await.unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            indexer.wait_until_idle(),
+        )
+        .await
+        .expect("indexer should become idle");
+
+        let files = store.get_all_files().await.unwrap();
+        let paths: Vec<_> = files.iter().map(|f| f.path.clone()).collect();
+        assert_eq!(files.len(), 1, "dotfile in, pem out: {paths:?}");
+        assert!(paths[0].ends_with(".notes.md"));
+        indexer.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_hidden_index_root_is_kept() {
+        let parent = tempdir().unwrap();
+        let root = parent.path().join(".notes");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("todo.md"), "hidden root note").unwrap();
+        std::fs::create_dir(root.join(".obsidian")).unwrap();
+        std::fs::write(root.join(".obsidian").join("x.md"), "obsidian").unwrap();
+
+        let store = Arc::new(MockStore::new());
+        let indexer = create_test_indexer(Arc::clone(&store) as Arc<dyn VectorStore>, &root);
+        indexer.start().await.unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            indexer.wait_until_idle(),
+        )
+        .await
+        .expect("indexer should become idle");
+
+        let files = store.get_all_files().await.unwrap();
+        assert_eq!(files.len(), 1, "hidden root keeps visible children");
+        assert!(files[0].path.ends_with("todo.md"));
+        indexer.stop().await.unwrap();
+    }
+    #[tokio::test]
+    async fn failed_purge_aborts_start_before_watching() {
+        let temp = tempdir().unwrap();
+        let store = Arc::new(MockStore {
+            fail_delete: true,
+            ..MockStore::new()
+        });
+        seed_file(&store, &temp.path().join("secrets.md"), "private").await;
+        let indexer = create_test_indexer(store.clone(), temp.path());
+        assert!(indexer.start().await.is_err());
+        assert!(!*indexer.running.read().await);
+        assert!(indexer.watcher.read().await.is_none());
+        assert_eq!(store.get_all_files().await.unwrap().len(), 1);
     }
 }

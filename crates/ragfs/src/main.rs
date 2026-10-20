@@ -111,6 +111,11 @@ enum Commands {
         /// Allow other users to access the mount
         #[arg(long)]
         allow_other: bool,
+
+        /// Index hidden files and directories under the source root.
+        /// Does not disable the secret-file denylist.
+        #[arg(long)]
+        include_hidden: bool,
     },
 
     /// Index a directory (without mounting)
@@ -127,6 +132,11 @@ enum Commands {
         /// Watch for changes after initial indexing
         #[arg(short, long)]
         watch: bool,
+
+        /// Index hidden files and directories under the path.
+        /// Does not disable the secret-file denylist.
+        #[arg(long)]
+        include_hidden: bool,
     },
 
     /// Query the index
@@ -452,6 +462,7 @@ async fn run(cli: Cli) -> Result<()> {
             mountpoint,
             foreground,
             allow_other,
+            include_hidden,
         } => {
             info!("Mounting {:?} at {:?}", source, mountpoint);
 
@@ -472,7 +483,7 @@ async fn run(cli: Cli) -> Result<()> {
             // Initialize store
             store.init().await.context("Failed to initialize store")?;
 
-            let indexer_config = config.to_indexer_config(false);
+            let indexer_config = config.to_indexer_config_with(false, include_hidden);
 
             let indexer = Arc::new(IndexerService::new(
                 source.clone(),
@@ -575,7 +586,12 @@ async fn run(cli: Cli) -> Result<()> {
             }
         }
 
-        Commands::Index { path, force, watch } => {
+        Commands::Index {
+            path,
+            force,
+            watch,
+            include_hidden,
+        } => {
             if !path.exists() {
                 anyhow::bail!("Directory does not exist: {}", path.display());
             }
@@ -586,7 +602,7 @@ async fn run(cli: Cli) -> Result<()> {
             let (store, extractors, chunkers, embedder) =
                 create_components(path.clone(), &config).await?;
 
-            let indexer_config = config.to_indexer_config(force);
+            let indexer_config = config.to_indexer_config_with(force, include_hidden);
 
             // Create indexer
             let indexer = IndexerService::new(

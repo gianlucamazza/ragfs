@@ -11,6 +11,8 @@ use std::time::Duration;
 use tokio::sync::mpsc as tokio_mpsc;
 use tracing::{debug, error, warn};
 
+use crate::exclude::ExclusionMatcher;
+
 /// File system watcher with debouncing.
 pub struct FileWatcher {
     debouncer: Debouncer<RecommendedWatcher, RecommendedCache>,
@@ -31,14 +33,27 @@ impl FileWatcher {
         debounce_duration: Duration,
         pending: Option<Arc<AtomicUsize>>,
     ) -> Result<Self, notify::Error> {
+        Self::with_filter(event_tx, debounce_duration, pending, None)
+    }
+
+    /// Create a watcher that filters events with the shared exclusion matcher.
+    pub fn with_filter(
+        event_tx: tokio_mpsc::Sender<FileEvent>,
+        debounce_duration: Duration,
+        pending: Option<Arc<AtomicUsize>>,
+        matcher: Option<Arc<ExclusionMatcher>>,
+    ) -> Result<Self, notify::Error> {
         let (tx, rx) = mpsc::channel();
 
-        // Spawn thread to convert events
         let event_tx_clone = event_tx.clone();
         std::thread::spawn(move || {
             while let Ok(result) = rx.recv() {
-                if let Err(e) = handle_debounced_events(result, &event_tx_clone, pending.as_deref())
-                {
+                if let Err(e) = handle_debounced_events(
+                    result,
+                    &event_tx_clone,
+                    pending.as_deref(),
+                    matcher.as_deref(),
+                ) {
                     error!("Error handling file events: {e}");
                 }
             }
@@ -70,11 +85,12 @@ fn handle_debounced_events(
     result: DebounceEventResult,
     event_tx: &tokio_mpsc::Sender<FileEvent>,
     pending: Option<&AtomicUsize>,
+    matcher: Option<&ExclusionMatcher>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match result {
         Ok(events) => {
             for event in events {
-                if let Some(file_event) = convert_event(&event) {
+                if let Some(file_event) = convert_event(&event, matcher) {
                     if let Some(pending) = pending {
                         pending.fetch_add(1, Ordering::SeqCst);
                     }
@@ -98,16 +114,23 @@ fn handle_debounced_events(
     Ok(())
 }
 
-fn convert_event(event: &notify_debouncer_full::DebouncedEvent) -> Option<FileEvent> {
+fn convert_event(
+    event: &notify_debouncer_full::DebouncedEvent,
+    matcher: Option<&ExclusionMatcher>,
+) -> Option<FileEvent> {
     use notify_debouncer_full::notify::EventKind;
 
     let path = event.paths.first()?.clone();
 
-    // Skip hidden files and directories
-    if path
-        .file_name()
-        .is_some_and(|name| name.to_string_lossy().starts_with('.'))
-    {
+    if let Some(matcher) = matcher {
+        if matcher.is_excluded(&path) {
+            return None;
+        }
+    } else if path.components().any(|component| {
+        let name = component.as_os_str().to_string_lossy();
+        name.starts_with('.') && name != "." && name != ".."
+    }) {
+        // Fail-closed when no matcher is supplied.
         return None;
     }
 
@@ -133,6 +156,7 @@ fn convert_event(event: &notify_debouncer_full::DebouncedEvent) -> Option<FileEv
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exclude::ExclusionOptions;
     use notify_debouncer_full::DebouncedEvent;
     use notify_debouncer_full::notify::EventKind;
     use notify_debouncer_full::notify::event::{CreateKind, ModifyKind, RemoveKind};
@@ -155,7 +179,7 @@ mod tests {
         let path = PathBuf::from("/tmp/test.txt");
         let event = make_event(EventKind::Create(CreateKind::File), vec![path.clone()]);
 
-        let result = convert_event(&event);
+        let result = convert_event(&event, None);
         assert!(matches!(result, Some(FileEvent::Created(p)) if p == path));
     }
 
@@ -168,7 +192,7 @@ mod tests {
             vec![path.clone()],
         );
 
-        let result = convert_event(&event);
+        let result = convert_event(&event, None);
         assert!(matches!(result, Some(FileEvent::Modified(p)) if p == path));
     }
 
@@ -177,7 +201,7 @@ mod tests {
         let path = PathBuf::from("/tmp/test.txt");
         let event = make_event(EventKind::Remove(RemoveKind::File), vec![path.clone()]);
 
-        let result = convert_event(&event);
+        let result = convert_event(&event, None);
         assert!(matches!(result, Some(FileEvent::Deleted(p)) if p == path));
     }
 
@@ -186,7 +210,30 @@ mod tests {
         let path = PathBuf::from("/tmp/.hidden");
         let event = make_event(EventKind::Create(CreateKind::File), vec![path]);
 
-        let result = convert_event(&event);
+        let result = convert_event(&event, None);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_matcher_skips_secret_and_hidden_dir() {
+        let matcher = ExclusionMatcher::new("/proj", ExclusionOptions::default());
+        let secret = make_event(
+            EventKind::Create(CreateKind::File),
+            vec![PathBuf::from("/proj/server.pem")],
+        );
+        let hidden_dir = make_event(
+            EventKind::Create(CreateKind::File),
+            vec![PathBuf::from("/proj/.obsidian/x.md")],
+        );
+        let visible = make_event(
+            EventKind::Create(CreateKind::File),
+            vec![PathBuf::from("/proj/notes/keyboard.md")],
+        );
+        assert!(convert_event(&secret, Some(&matcher)).is_none());
+        assert!(convert_event(&hidden_dir, Some(&matcher)).is_none());
+        assert!(matches!(
+            convert_event(&visible, Some(&matcher)),
+            Some(FileEvent::Created(p)) if p.ends_with("keyboard.md")
+        ));
     }
 }
