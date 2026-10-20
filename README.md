@@ -25,7 +25,7 @@ All processing stays on the machine. The first run downloads [`thenlper/gte-smal
 
 ## Quick start
 
-GitHub Release `v0.2.0` ships the Linux CLI only (crates.io and PyPI are not used).
+GitHub Release `v0.3.0` ships the Linux CLI only (crates.io and PyPI are not used).
 
 ```bash
 tar -xzf ragfs-linux-x86_64.tar.gz
@@ -69,7 +69,7 @@ Local embeddings via Candle. Code splits are pattern-based, not a tree-sitter AS
 ## Limits
 
 - Linux only.
-- `ragfs index` without `--watch` does not drop chunks for files that vanished while the process was down.
+- Initial indexing reconciles confirmed missing files after a complete scan. Incomplete scans and unavailable roots preserve records; this is not a filesystem snapshot.
 - Default extractors skip binary `.doc` / RTF / EPUB.
 - Vector search is an exact scan until cosine IVF-PQ is built (≥256 chunks). L2/Dot stay exact.
 - Indices live under `~/.local/share/ragfs/` (`RAGFS_DATA_DIR` overrides).
