@@ -317,10 +317,31 @@ jobs:
           cd crates/ragfs-python
           pytest tests/test_haystack/ -v -m "not slow"
 
+  no-mount:
+    name: No mount
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - run: cargo build --locked -p ragfs --no-default-features --features candle,lancedb
+      - name: No FUSE dependency or mount operation
+        run: |
+          if cargo tree -p ragfs --no-default-features --features candle,lancedb -e normal | grep -q 'fuser v'; then
+            echo 'fuser must not be linked'; exit 1
+          fi
+          if target/debug/ragfs mount /tmp /tmp --foreground >mount.log 2>&1; then
+            echo 'mount must fail'; exit 1
+          fi
+          grep -q 'built without mount' mount.log
+
   ci:
     name: CI
     runs-on: ubuntu-latest
-    needs: [fmt, cargo-deny, check, clippy, test, doc, msrv]
+    needs: [fmt, cargo-deny, check, clippy, test, doc, msrv, no-mount]
     if: always()
     steps:
       - name: Required jobs passed or skipped
@@ -332,6 +353,7 @@ jobs:
           TEST: ${{ needs.test.result }}
           DOC: ${{ needs.doc.result }}
           MSRV: ${{ needs.msrv.result }}
+          NO_MOUNT: ${{ needs.no-mount.result }}
         run: |
           set -euo pipefail
           ok() { [ "$1" = success ] || [ "$1" = skipped ]; }
@@ -343,4 +365,5 @@ jobs:
           ok "$TEST"   || { echo "Test: $TEST"; rc=1; }
           ok "$DOC"    || { echo "Documentation: $DOC"; rc=1; }
           ok "$MSRV"   || { echo "MSRV (1.91): $MSRV"; rc=1; }
+          ok "$NO_MOUNT" || { echo "No mount: $NO_MOUNT"; rc=1; }
           exit "$rc"

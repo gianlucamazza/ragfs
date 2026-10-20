@@ -20,31 +20,32 @@ name = "ragfs"
 path = "src/main.rs"
 
 [features]
-default = ["candle", "lancedb"]
-full = ["candle", "lancedb", "vision"]
+default = ["candle", "lancedb", "mount"]
+full = ["candle", "lancedb", "vision", "mount"]
+mount = ["dep:ragfs-fuse", "dep:fuser"]
 candle = [
     "ragfs-embed/candle",
     "ragfs-index/candle",
     "ragfs-query/candle",
-    "ragfs-fuse/candle",
+    "ragfs-fuse?/candle",
 ]
 lancedb = [
     "ragfs-store/lancedb",
     "ragfs-index/lancedb",
     "ragfs-query/lancedb",
-    "ragfs-fuse/lancedb",
+    "ragfs-fuse?/lancedb",
 ]
 vision = [
     "ragfs-extract/vision",
     "ragfs-index/vision",
-    "ragfs-fuse/vision",
+    "ragfs-fuse?/vision",
 ]
 # Lets the CLI honor RAGFS_TEST_EMBEDDER=noop (NoopEmbedder, no model download).
 test-backends = []
 
 [dependencies]
 ragfs-core.workspace = true
-ragfs-fuse.workspace = true
+ragfs-fuse = { workspace = true, optional = true }
 ragfs-index.workspace = true
 ragfs-store.workspace = true
 ragfs-query.workspace = true
@@ -61,7 +62,7 @@ tracing-subscriber.workspace = true
 directories.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
-fuser.workspace = true
+fuser = { workspace = true, optional = true }
 blake3.workspace = true
 chrono.workspace = true
 nix.workspace = true

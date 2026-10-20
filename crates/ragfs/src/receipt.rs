@@ -28,6 +28,10 @@ pub struct QueryOutput {
     pub index_revision: u64,
     pub ragfs_version: String,
     pub embedding_model: String,
+    #[serde(default)]
+    pub embedding_dim: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_alnum_chars: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receipt_path: Option<String>,
 }
@@ -40,6 +44,10 @@ pub struct QueryReceipt {
     pub index_revision: u64,
     pub ragfs_version: String,
     pub embedding_model: String,
+    #[serde(default)]
+    pub embedding_dim: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_alnum_chars: Option<usize>,
     pub results: Vec<ResultItem>,
 }
 
@@ -53,6 +61,8 @@ impl QueryReceipt {
             index_revision: output.index_revision,
             ragfs_version: output.ragfs_version.clone(),
             embedding_model: output.embedding_model.clone(),
+            embedding_dim: output.embedding_dim,
+            min_alnum_chars: output.min_alnum_chars,
             results: output.results.clone(),
         }
     }
@@ -133,6 +143,8 @@ mod tests {
             index_revision: 3,
             ragfs_version: "0.2.1".into(),
             embedding_model: "thenlper/gte-small".into(),
+            embedding_dim: 384,
+            min_alnum_chars: Some(3),
             receipt_path: None,
         }
     }

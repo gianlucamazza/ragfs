@@ -253,6 +253,7 @@ fn get_log_path(source: &Path) -> Result<PathBuf> {
 async fn create_components(
     source: PathBuf,
     config: &Config,
+    for_indexing: bool,
 ) -> Result<(
     Arc<LanceStore>,
     Arc<ExtractorRegistry>,
@@ -292,10 +293,12 @@ async fn create_components(
         ))
     };
 
-    let store = Arc::new(
-        LanceStore::new(db_path, embedder_pool.dimension())
-            .with_embedding_model(embedder_pool.model_name()),
-    );
+    let mut store = LanceStore::new(db_path, embedder_pool.dimension())
+        .with_embedding_model(embedder_pool.model_name());
+    if for_indexing {
+        store = store.with_min_alnum_chars(config.chunking.min_alnum_chars);
+    }
+    let store = Arc::new(store);
 
     let mut extractors = ExtractorRegistry::new();
     extractors.register("text", TextExtractor::new());
@@ -312,6 +315,21 @@ async fn create_components(
     let chunkers = Arc::new(chunkers);
 
     Ok((store, extractors, chunkers, embedder_pool))
+}
+
+/// Apply a new ingestion policy before scan or mount; query opens never claim
+/// that existing rows were filtered by a policy they have not been through.
+async fn prepare_index_store(store: &LanceStore, config: &Config, force: bool) -> Result<()> {
+    if force {
+        store.rebuild().await.context("Failed to rebuild index")?;
+    } else if store.indexed_min_alnum_chars().await != Some(config.chunking.min_alnum_chars) {
+        store.init().await.context("Failed to initialize store")?;
+        store
+            .rebuild()
+            .await
+            .context("Failed to apply chunk policy")?;
+    }
+    Ok(())
 }
 
 fn use_test_noop_embedder() -> bool {
@@ -444,6 +462,9 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if !cfg!(feature = "mount") && matches!(cli.command, Commands::Mount { .. }) {
+        anyhow::bail!("built without mount");
+    }
     maybe_daemonize_background_mount(&mut cli)?;
 
     tokio::runtime::Builder::new_multi_thread()
@@ -457,6 +478,7 @@ async fn run(cli: Cli) -> Result<()> {
     let config = load_config(&cli)?;
 
     match cli.command {
+        #[cfg(feature = "mount")]
         Commands::Mount {
             source,
             mountpoint,
@@ -478,10 +500,9 @@ async fn run(cli: Cli) -> Result<()> {
 
             // Create components for RAG functionality
             let (store, extractors, chunkers, embedder_pool) =
-                create_components(source.clone(), &config).await?;
+                create_components(source.clone(), &config, true).await?;
 
-            // Initialize store
-            store.init().await.context("Failed to initialize store")?;
+            prepare_index_store(&store, &config, false).await?;
 
             let indexer_config = config.to_indexer_config_with(false, include_hidden);
 
@@ -586,6 +607,9 @@ async fn run(cli: Cli) -> Result<()> {
             }
         }
 
+        #[cfg(not(feature = "mount"))]
+        Commands::Mount { .. } => anyhow::bail!("built without mount"),
+
         Commands::Index {
             path,
             force,
@@ -600,7 +624,9 @@ async fn run(cli: Cli) -> Result<()> {
             info!("Indexing {:?} (force={})", path, force);
 
             let (store, extractors, chunkers, embedder) =
-                create_components(path.clone(), &config).await?;
+                create_components(path.clone(), &config, true).await?;
+
+            prepare_index_store(&store, &config, force).await?;
 
             let indexer_config = config.to_indexer_config_with(force, include_hidden);
 
@@ -687,12 +713,14 @@ async fn run(cli: Cli) -> Result<()> {
             }
 
             let (store, _extractors, _chunkers, embedder) =
-                create_components(path, &config).await?;
+                create_components(path, &config, false).await?;
 
             // Initialize store
             store.init().await.context("Failed to initialize store")?;
             let index_revision = store.index_revision().await?;
             let embedding_model = embedder.model_name().to_string();
+            let embedding_dim = embedder.dimension();
+            let min_alnum_chars = store.indexed_min_alnum_chars().await;
 
             let limit = config.query_limit(limit);
             let use_hybrid = config.query_hybrid(hybrid);
@@ -730,6 +758,8 @@ async fn run(cli: Cli) -> Result<()> {
                 index_revision,
                 ragfs_version: env!("CARGO_PKG_VERSION").to_string(),
                 embedding_model,
+                embedding_dim,
+                min_alnum_chars,
                 receipt_path: None,
             };
 
@@ -808,8 +838,14 @@ async fn run(cli: Cli) -> Result<()> {
                 .context("Failed to get data directory")?
                 .join("models");
             // try_new does not download weights; dimension() is the SoT.
-            let embedder = CandleEmbedder::try_new(cache_dir, model, false)
-                .context("Failed to create embedder")?;
+            let embedder: Box<dyn Embedder> = if use_test_noop_embedder() {
+                Box::new(NoopEmbedder::new())
+            } else {
+                Box::new(
+                    CandleEmbedder::try_new(cache_dir, model, false)
+                        .context("Failed to create embedder")?,
+                )
+            };
             let store = LanceStore::new(db_path, embedder.dimension())
                 .with_embedding_model(embedder.model_name());
             store.init().await.context("Failed to initialize store")?;

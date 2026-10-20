@@ -54,6 +54,8 @@ pub struct IndexerConfig {
     pub honor_gitignore: bool,
     /// Delete store rows whose paths are now excluded, on every index/scan.
     pub purge_excluded: bool,
+    /// Minimum Unicode letters / decimal digits before embedding.
+    pub min_alnum_chars: usize,
 }
 
 impl Default for IndexerConfig {
@@ -70,6 +72,7 @@ impl Default for IndexerConfig {
             include_secret_files: false,
             honor_gitignore: true,
             purge_excluded: true,
+            min_alnum_chars: 3,
         }
     }
 }
@@ -98,7 +101,12 @@ impl IndexerConfig {
     /// Prefer [`Self::should_process_path_in`] so a hidden index root is kept.
     #[must_use]
     pub fn should_process_path(&self, path: &Path) -> bool {
-        self.should_process_path_in(path, Path::new("/"))
+        let root = if path.is_absolute() {
+            Path::new("/")
+        } else {
+            Path::new("")
+        };
+        self.should_process_path_in(path, root)
     }
 
     /// Whether `path` is eligible under `root`.
@@ -289,8 +297,11 @@ impl IndexerService {
 
         info!("Starting indexer for {:?}", self.root);
 
-        // Initialize store
-        self.store.init().await.map_err(Error::Store)?;
+        // A failed open must remain retryable, not look like a running service.
+        if let Err(error) = self.store.init().await {
+            *self.running.write().await = false;
+            return Err(Error::Store(error));
+        }
 
         // Purge before starting background work; failure must not report a
         // successful upgrade while excluded content remains searchable.
@@ -562,7 +573,13 @@ impl IndexerService {
 
         use tokio_stream::StreamExt;
         while let Some(entry) = entries_stream.next().await {
-            let entry = entry.map_err(|e| Error::Other(format!("Failed to read entry: {e}")))?;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    warn!("Cannot read index entry in {}: {error}", dir.display());
+                    continue;
+                }
+            };
             let path = entry.path();
 
             if path.is_dir() {
@@ -725,12 +742,17 @@ async fn process_file(
     let content_type = determine_content_type(path, &mime_type, &content);
 
     // Chunk content
-    let chunk_outputs = chunkers
+    let mut chunk_outputs = chunkers
         .chunk(&content, &content_type, &config.chunk_config)
         .await
         .map_err(Error::Chunking)?;
 
+    chunk_outputs.retain(|chunk| chunk_has_content(&chunk.content, config.min_alnum_chars));
     if chunk_outputs.is_empty() {
+        store
+            .delete_by_file_path(path)
+            .await
+            .map_err(Error::Store)?;
         return Ok(0);
     }
 
@@ -801,6 +823,27 @@ async fn process_file(
         .map_err(Error::Store)?;
 
     Ok(chunk_count)
+}
+
+/// Unicode general categories L* and Nd; unlike `is_alphanumeric`, this
+/// deliberately excludes `Letter_Number` and `Other_Number` (e.g. fractions).
+fn chunk_has_content(text: &str, minimum: usize) -> bool {
+    use unicode_general_category::{GeneralCategory, get_general_category};
+    text.chars()
+        .filter(|character| {
+            matches!(
+                get_general_category(*character),
+                GeneralCategory::UppercaseLetter
+                    | GeneralCategory::LowercaseLetter
+                    | GeneralCategory::TitlecaseLetter
+                    | GeneralCategory::ModifierLetter
+                    | GeneralCategory::OtherLetter
+                    | GeneralCategory::DecimalNumber
+            )
+        })
+        .take(minimum)
+        .count()
+        >= minimum
 }
 
 /// Compute blake3 hash of file content.
@@ -1996,5 +2039,20 @@ mod tests {
         assert!(!*indexer.running.read().await);
         assert!(indexer.watcher.read().await.is_none());
         assert_eq!(store.get_all_files().await.unwrap().len(), 1);
+    }
+    #[test]
+    fn degenerate_chunks_use_unicode_letters_and_decimal_digits() {
+        for text in ["---", "#", "  \n", "½Ⅷ²"] {
+            assert!(!chunk_has_content(text, 3));
+        }
+        assert!(chunk_has_content("中文啊", 3));
+        assert!(chunk_has_content("a١２", 3));
+        assert!(chunk_has_content("", 0));
+    }
+    #[test]
+    fn rootless_config_filter_accepts_relative_visible_paths() {
+        let config = IndexerConfig::default();
+        assert!(config.should_process_path(Path::new("notes/keyboard.md")));
+        assert!(!config.should_process_path(Path::new("notes/server.pem")));
     }
 }

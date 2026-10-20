@@ -932,3 +932,17 @@ vim $(ragfs query ./src "config" -f json | jq -r '.results[0].file')
 echo -e "docs/api.md\n# API Reference" > /mnt/ragfs/.ragfs/.ops/.create
 cat /mnt/ragfs/.ragfs/.ops/.result | jq '.success'
 ```
+
+## Upgrading to 0.3.0
+
+Run `ragfs index <path>` once for every existing index before serving it. This
+applies hidden/secret exclusions and the chunk-content floor to existing rows.
+A failed exclusion purge now fails the operation rather than reporting success.
+A hidden root such as `~/.notes` does not need `--include-hidden`; use that flag
+only when hidden descendants should be indexed. Secrets remain excluded.
+
+If the embedding model changes, run `ragfs index <path> --force`. The command
+rebuilds index tables, keeps original files and historical receipts, and records
+the new model id and dimension. Queries refuse mismatched indexes and write no
+receipt when opening the store fails. Place local rules in `.ragfsignore` under
+the indexed tree; see CONFIGURATION.md for precedence and scope.

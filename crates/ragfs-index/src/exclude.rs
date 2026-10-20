@@ -13,7 +13,7 @@
 //!
 //! Hidden/secret path exclusion is adapted from [sophie4869/ragfs](https://github.com/sophie4869/ragfs)
 //! onto the `ignore` crate (`WalkBuilder` + `OverrideBuilder`) as specified
-//! by ADR-010. `.ragfsignore` is a later PR.
+//! by ADR-010. Nested `.ragfsignore` files are supported under the index root.
 
 use ignore::WalkBuilder;
 use ignore::gitignore::Gitignore;
@@ -328,7 +328,7 @@ fn gitignore_excludes(root: &Path, path: &Path) -> bool {
         let mut ignored = false;
         // File kind takes precedence over depth; the nearest file of the
         // same kind wins. All evaluation stays inside the index root.
-        for name in [".gitignore", ".ignore"] {
+        for name in [".gitignore", ".ignore", ".ragfsignore"] {
             for dir in &dirs {
                 let ignore_path = dir.join(name);
                 if !ignore_path.is_file() {
@@ -652,7 +652,59 @@ mod tests {
             cfg!(any(target_os = "macos", target_os = "windows"))
         );
     }
-
+    #[test]
+    fn nested_ragfsignore_is_bounded_and_has_highest_priority() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join("root");
+        fs::create_dir_all(&root).unwrap();
+        write(tmp.path(), ".ragfsignore", "*.md\n");
+        write(&root, ".ignore", "*.md\n");
+        write(&root, ".ragfsignore", "# keep notes\n!*.md\ncache/\n");
+        write(&root, "sub/.ragfsignore", "drop.md\n!secrets.md\n");
+        write(&root, "sub/keep.md", "keep");
+        write(&root, "sub/drop.md", "drop");
+        write(&root, "sub/secrets.md", "secret");
+        write(&root, "cache/note.md", "cached");
+        let matcher = matcher_at(&root);
+        assert_eq!(matcher.collect_files(), vec![root.join("sub/keep.md")]);
+        for name in ["sub/drop.md", "sub/secrets.md", "cache/note.md"] {
+            assert!(matcher.is_excluded(&root.join(name)));
+        }
+        fs::remove_file(root.join(".ignore")).unwrap();
+        fs::remove_file(root.join(".ragfsignore")).unwrap();
+        assert!(matcher.should_process(&root.join("sub/keep.md")));
+    }
+    #[test]
+    fn unreadable_walk_entry_emits_warning() {
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+        #[derive(Clone)]
+        struct Capture(Arc<Mutex<Vec<u8>>>);
+        impl Write for Capture {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let capture = Capture(bytes.clone());
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || capture.clone())
+            .finish();
+        let temp = tempdir().unwrap();
+        // A missing entry is deterministic even when tests run as root.
+        let matcher = matcher_at(&temp.path().join("missing"));
+        tracing::subscriber::with_default(subscriber, || {
+            assert!(matcher.collect_files().is_empty());
+        });
+        let log = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(log.contains("Cannot read index entry"), "{log}");
+    }
     #[test]
     fn directory_override_also_excludes_direct_child_events() {
         let temp = tempdir().unwrap();

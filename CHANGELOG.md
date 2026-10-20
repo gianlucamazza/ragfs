@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security and index integrity
+
+- Apply nested `.ragfsignore` rules with root-bounded precedence.
+- Reject model-id and dimension mismatches on store open; explicit `--force`
+  rebuilds index tables and fingerprints without removing historical receipts.
+- Drop chunks below `[chunking].min_alnum_chars` (default 3) before embedding;
+  record the applied policy and embedding dimension in query receipts.
+- Report traversal errors and propagate excluded-row purge failures.
+- Add a default-on `mount` feature and a CI check for CLI builds without FUSE.
+- Add a post-insert FTS regression covering both hybrid and lexical queries.
+
+
 ### Breaking / behaviour changes
 
 - **BREAKING**: Safer default exclusions for indexing (planned 0.3.0). Hidden files *and* hidden directories under the index root are skipped; a secret-file denylist (`.env*`, `*.pem` / `*.key`, `id_rsa` / `id_ed25519`, credentials files, `.netrc` / `.npmrc` / `.pypirc`, kube config, and similar) is always on. `--include-hidden` / `index.include_hidden` does not disable that denylist. CLI, mount, MCP (via the CLI-built index), and library `IndexerConfig` share one `ignore`-crate matcher. `.gitignore` / `.ignore` under the index root are honoured by default (no parent walk, no global gitignore); `!` rules cannot re-include secrets. Every `ragfs index` purges store rows for newly excluded paths (not only `--force`). See ADR-010.
