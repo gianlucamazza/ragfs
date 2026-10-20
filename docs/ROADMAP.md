@@ -61,8 +61,9 @@ Mark these done so the plan does not re-open them.
 | ADR-010 Accepted (design only) | Done (ADR PR) | `#175` / `e310209c` |
 | ADR-011 Accepted (design only) | Done (phase 0) | `#177` / `0ef60e0b` |
 
-The generated 0.2.3 PR #176 is closed as superseded. Release preparation is
-#208 for **0.3.0**, following the breaking ADR-010 changes.
+The generated 0.2.3 PRs #176, #209 and #212 are closed as superseded.
+**0.3.0 shipped** in #208 at `23260656`, including #206 and #207.
+The release and post-merge CI passed; ADR-009 and ADR-011 are now unblocked.
 
 ---
 
@@ -139,7 +140,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 
 | Field | Value |
 |-------|--------|
-| Status | Implemented in #207 |
+| Status | Done — #207, `a94c6b6` |
 | Issue | (#180) |
 | Size | M (~250–500 LOC) |
 | Gate | CoS merge |
@@ -165,7 +166,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 
 | Field | Value |
 |-------|--------|
-| Status | Implemented in #207 |
+| Status | Done — #207, `a94c6b6` |
 | Issue | (#181) |
 | Size | M (~200–400 LOC) |
 | Gate | CoS merge |
@@ -200,7 +201,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 
 | Field | Value |
 |-------|--------|
-| Status | Implemented in #207 |
+| Status | Done — #207, `a94c6b6` |
 | Issue | (#182) |
 | Size | S (~150–300 LOC) |
 | Gate | CoS merge |
@@ -224,7 +225,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 
 | Field | Value |
 |-------|--------|
-| Status | Implemented in #207 |
+| Status | Done — #207, `a94c6b6` |
 | Issue | (#183) |
 | Size | S (~50–150 LOC) |
 | Gate | CoS merge |
@@ -246,7 +247,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 
 | Field | Value |
 |-------|--------|
-| Status | Implemented in #207 |
+| Status | Done — #207, `a94c6b6` |
 | Issue | (#184) |
 | Size | S (~100–250 LOC); M (~+100–300) only if the test fails and FTS must be refreshed |
 | Gate | CoS merge |
@@ -271,7 +272,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 
 | Field | Value |
 |-------|--------|
-| Status | Implemented in #207 |
+| Status | Done — #207, `a94c6b6` |
 | Issue | (#185) |
 | Size | M (~200–400 LOC, mostly Cargo + CI + CLI error path) |
 | Gate | CoS merge |
@@ -295,7 +296,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 
 | Field | Value |
 |-------|--------|
-| Status | Release preparation #208 |
+| Status | Done — #208, `23260656`, v0.3.0 published |
 | Issue | (#186) |
 | Size | S (CHANGELOG + version bump across workspace / Python packages; follow the 0.2.2 release-prep pattern) |
 | Gate | **Gianluca** |
@@ -887,47 +888,7 @@ same exclude defaults if they ingest a tree (ADR-010). Not a ragfs CLI PR.
 
 ## Critical path
 
-```mermaid
-flowchart TD
-  p1["adr010-pr1 excludes + denylist + purge<br/>DONE (#206)"] --> p2["adr010-pr2 nested .ragfsignore"]
-  p1 --> p3["adr010-pr3 model fingerprint"]
-  p1 --> p4["adr010-pr4 min_alnum_chars"]
-  p1 --> p5["adr010-pr5 log unreadable entries"]
-  p1 --> p6["adr010-pr6 FTS staleness test-first"]
-  p1 --> p7["adr010-pr7 optional mount feature"]
-  p2 --> rel["adr010-release 0.3.0<br/>Gianluca"]
-  p3 --> rel
-  p4 --> rel
-  p5 --> rel
-  p6 --> rel
-  p7 --> rel
-  rel --> m1["adr011-p1 captions + pixel budget"]
-  m1 --> m2["adr011-p2 schema v3"]
-  m1 --> m3["adr011-p3 OCR"]
-  m2 --> m4["adr011-p4 CLIP/SigLIP table"]
-  m2 --> m5["adr011-p5 whisper.cpp audio"]
-  m1 --> m6["adr011-p6 video last"]
-  m5 --> m6
-  p3 --> b1["adr009-p1 protocol schema"]
-  rel --> b1
-  b1 --> b2["adr009-p2 versioned-facts"]
-  b2 --> b3["adr009-p3 bm25 + vector"]
-  b3 --> b4["adr009-p4 ragfs adapter"]
-  b3 --> b5["adr009-p5 emotional-memory adapter"]
-  b4 --> b6["adr009-p6..p8 public sets<br/>Gianluca pins + publish"]
-  b5 --> b6
-```
-
-**0.3.0 (blocking everything that changes the corpus or opens a new modality):**
-
-1. **adr010-pr1** landed in #206. It was first on the critical path: it owns the shared matcher, hidden+secret defaults, and
-   purge.
-2. **adr010-pr2** needs that matcher.
-3. **adr010-pr3** is the fail-closed fingerprint later multimodal and
-   ADR-009 pins need. It can proceed in parallel with PR 2 once PR 1 is in.
-4. **adr010-pr4 / pr5 / pr6 / pr7** are independent of each other after PR 1
-   and can overlap; they all gate the 0.3.0 release PR.
-5. **adr010-release** is the maintainer gate that unblocks ADR-011 code.
+ADR-010 and release 0.3.0 are complete. The remaining implementation paths are:
 
 **After 0.3.0:**
 
@@ -946,7 +907,7 @@ flowchart TD
 
 Items the ADRs reserve for Gianluca, or that this plan must not assume:
 
-1. **Release 0.3.0** (CHANGELOG, version bump, tag). Not 0.2.3.
+1. **Release 0.3.0: completed** in #208; no further release approval is pending for it.
 2. **Publishing any benchmark number** that is not still
    `TBD (to be measured)`. Includes quoting a committed results file in docs
    or README.
@@ -988,7 +949,7 @@ stays `gte-small`.
 - #207: implementation for #180–#185, including nested ignore, model fingerprint,
   Unicode chunk floor, traversal diagnostics, FTS regression and optional mount.
   Required CI and Python checks are the merge gate; local suite: 163 tests passed.
-- #186 / #208: 0.3.0 release follows both PRs; never publish these changes as 0.2.3.
+- #186 / #208: 0.3.0 released at `23260656`; main CI and release workflow passed.
 - #176 and #209: superseded for this sequence by the 0.3.0 release preparation.
 - ADR-011 and ADR-009 remain subsequent work with the dependencies above. No
   benchmark measurements or multimodal completion are claimed by these PRs.
