@@ -13,6 +13,8 @@ pub const RECEIPTS_DIR_NAME: &str = "receipts";
 /// One hit in query JSON / a receipt. Existing field names stay stable.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResultItem {
+    #[serde(default, flatten)]
+    pub media: ragfs_core::MediaInfo,
     pub file: String,
     pub score: f32,
     pub content: String,
@@ -135,6 +137,7 @@ mod tests {
         QueryOutput {
             query: "auth login".into(),
             results: vec![ResultItem {
+                media: Default::default(),
                 file: "src/auth.rs".into(),
                 score: 0.91,
                 content: "fn login() {}".into(),

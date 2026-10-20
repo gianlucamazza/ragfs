@@ -268,6 +268,9 @@ pub enum SymbolKind {
 /// Metadata associated with a chunk.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChunkMetadata {
+    /// Source modality and optional timestamp range. Legacy chunks default to text.
+    #[serde(default)]
+    pub media: MediaInfo,
     /// Embedding model used
     pub embedding_model: Option<String>,
     /// When chunk was indexed
@@ -425,6 +428,68 @@ pub enum Modality {
     Audio,
 }
 
+/// Source-media location, independent of the embedding modality (all caption,
+/// OCR and transcript chunks still use the text embedding space).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct MediaInfo {
+    pub modality: String,
+    pub start_ms: Option<u64>,
+    pub end_ms: Option<u64>,
+}
+
+impl Default for MediaInfo {
+    fn default() -> Self {
+        Self {
+            modality: "text".into(),
+            start_ms: None,
+            end_ms: None,
+        }
+    }
+}
+
+impl MediaInfo {
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        if !matches!(self.modality.as_str(), "text" | "image" | "audio" | "video") {
+            return Err("Unsupported source modality".into());
+        }
+        match (self.start_ms, self.end_ms) {
+            (None, None) => Ok(()),
+            (Some(start), Some(end)) if end >= start => Ok(()),
+            _ => Err("Media range requires start_ms <= end_ms, or both null".into()),
+        }
+    }
+
+    pub fn from_metadata(metadata: &HashMap<String, String>) -> std::result::Result<Self, String> {
+        let time = |key: &str| {
+            metadata
+                .get(key)
+                .map(|v| v.parse::<u64>().map_err(|_| format!("Invalid {key}")))
+                .transpose()
+        };
+        let media = Self {
+            modality: metadata
+                .get("modality")
+                .cloned()
+                .unwrap_or_else(|| "text".into()),
+            start_ms: time("start_ms")?,
+            end_ms: time("end_ms")?,
+        };
+        media.validate()?;
+        Ok(media)
+    }
+
+    pub fn write_metadata(&self, metadata: &mut HashMap<String, String>) {
+        metadata.remove("start_ms");
+        metadata.remove("end_ms");
+        metadata.insert("modality".into(), self.modality.clone());
+        if let (Some(start), Some(end)) = (self.start_ms, self.end_ms) {
+            metadata.insert("start_ms".into(), start.to_string());
+            metadata.insert("end_ms".into(), end.to_string());
+        }
+    }
+}
+
 /// Configuration for embedding.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingConfig {
@@ -513,6 +578,9 @@ pub enum DistanceMetric {
 /// A search result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
+    /// Additive media location; defaults to text for legacy results.
+    #[serde(default, flatten)]
+    pub media: MediaInfo,
     /// Chunk ID
     pub chunk_id: Uuid,
     /// File path
@@ -815,6 +883,7 @@ mod tests {
     #[test]
     fn test_search_result_serialization() {
         let result = SearchResult {
+            media: Default::default(),
             chunk_id: Uuid::new_v4(),
             file_path: PathBuf::from("/test/file.txt"),
             content: "Test content".to_string(),
@@ -1022,5 +1091,33 @@ mod tests {
             }
             _ => panic!("Expected Renamed event"),
         }
+    }
+}
+
+#[cfg(test)]
+mod media_tests {
+    use super::*;
+    #[test]
+    fn legacy_media_defaults_and_ranges_are_validated() {
+        assert_eq!(
+            serde_json::from_str::<MediaInfo>("{}").unwrap(),
+            MediaInfo::default()
+        );
+        let mut metadata = HashMap::from([
+            ("modality".into(), "audio".into()),
+            ("start_ms".into(), "10".into()),
+            ("end_ms".into(), "20".into()),
+        ]);
+        let media = MediaInfo::from_metadata(&metadata).unwrap();
+        assert_eq!(media.start_ms, Some(10));
+        metadata.insert("end_ms".into(), "9".into());
+        assert!(MediaInfo::from_metadata(&metadata).is_err());
+        metadata.remove("end_ms");
+        assert!(MediaInfo::from_metadata(&metadata).is_err());
+        MediaInfo::default().write_metadata(&mut metadata);
+        assert_eq!(
+            MediaInfo::from_metadata(&metadata).unwrap(),
+            MediaInfo::default()
+        );
     }
 }

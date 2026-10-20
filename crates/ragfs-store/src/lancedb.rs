@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use crate::schema::{
     CHUNKS_SCHEMA_VERSION, SCHEMA_SIDECAR_FILENAME, SchemaSidecar, effective_index_revision,
-    missing_scope_columns,
+    missing_media_columns, missing_scope_columns,
 };
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -186,7 +186,7 @@ impl LanceStore {
             .map_err(|e| StoreError::Init(format!("Failed to list tables: {e}")))?;
 
         if tables.contains(&CHUNKS_TABLE.to_string()) {
-            self.ensure_chunks_schema_v2().await?;
+            self.ensure_chunks_schema().await?;
         } else {
             info!("Creating chunks table");
             let schema = Arc::new(self.chunks_schema());
@@ -436,6 +436,9 @@ impl LanceStore {
             Field::new("dir_path", DataType::Utf8, false),
             Field::new("dir_depth", DataType::UInt16, false),
             Field::new("path_components", DataType::Utf8, false),
+            Field::new("modality", DataType::Utf8, true),
+            Field::new("start_ms", DataType::UInt64, true),
+            Field::new("end_ms", DataType::UInt64, true),
         ])
     }
 
@@ -653,7 +656,7 @@ impl LanceStore {
     ///
     /// `--force` rewrites index-root-relative `dir_path` on new upserts; it cannot
     /// add Lance columns. This path is what existing indexes need on upgrade.
-    async fn ensure_chunks_schema_v2(&self) -> Result<(), StoreError> {
+    async fn ensure_chunks_schema(&self) -> Result<(), StoreError> {
         let table = {
             let conn = self.get_connection().await?;
             conn.open_table(CHUNKS_TABLE)
@@ -667,7 +670,8 @@ impl LanceStore {
             .await
             .map_err(|e| StoreError::Schema(format!("Failed to read chunks schema: {e}")))?;
         self.ensure_embedding_dim_matches(&schema)?;
-        let missing = missing_scope_columns(&schema);
+        let mut missing = missing_scope_columns(&schema);
+        missing.extend(missing_media_columns(&schema));
         let sidecar_version = self
             .read_schema_sidecar()
             .await
@@ -680,7 +684,7 @@ impl LanceStore {
         if !missing.is_empty() {
             info!(
                 "Migrating chunks table to schema v{CHUNKS_SCHEMA_VERSION} \
-                 (adding directory-scope columns)"
+                 (adding scope and media columns)"
             );
             table
                 .add_columns()
@@ -696,6 +700,14 @@ impl LanceStore {
         }
 
         self.backfill_scope_columns().await?;
+        self.get_chunks_table()
+            .await?
+            .update()
+            .only_if("modality IS NULL")
+            .column("modality", "'text'")
+            .execute()
+            .await
+            .map_err(|e| StoreError::Schema(format!("Media backfill failed: {e}")))?;
         self.ensure_index_revision().await?;
         info!("Chunks table schema is v{CHUNKS_SCHEMA_VERSION}");
         Ok(())
@@ -768,6 +780,19 @@ impl LanceStore {
 
     /// Convert chunks to Arrow `RecordBatch`.
     fn chunks_to_batch(&self, chunks: &[Chunk]) -> Result<RecordBatch, StoreError> {
+        for chunk in chunks {
+            chunk
+                .metadata
+                .media
+                .validate()
+                .map_err(StoreError::Insert)?;
+        }
+        let modalities: Vec<_> = chunks
+            .iter()
+            .map(|c| c.metadata.media.modality.clone())
+            .collect();
+        let start_ms: Vec<_> = chunks.iter().map(|c| c.metadata.media.start_ms).collect();
+        let end_ms: Vec<_> = chunks.iter().map(|c| c.metadata.media.end_ms).collect();
         let chunk_ids: Vec<_> = chunks.iter().map(|c| c.id.to_string()).collect();
         let file_ids: Vec<_> = chunks.iter().map(|c| c.file_id.to_string()).collect();
         let file_paths: Vec<_> = chunks
@@ -880,6 +905,9 @@ impl LanceStore {
                 Arc::new(StringArray::from(dir_paths)),
                 Arc::new(UInt16Array::from(dir_depths)),
                 Arc::new(StringArray::from(path_components)),
+                Arc::new(StringArray::from(modalities)),
+                Arc::new(UInt64Array::from(start_ms)),
+                Arc::new(UInt64Array::from(end_ms)),
             ],
         )
         .map_err(|e| StoreError::Insert(format!("Failed to create RecordBatch: {e}")))?;
@@ -1606,6 +1634,29 @@ fn build_vector_array(
     Ok(Arc::new(builder.finish()))
 }
 
+fn media_from_batch(batch: &RecordBatch, row: usize) -> Result<ragfs_core::MediaInfo, StoreError> {
+    let modality = batch
+        .column_by_name("modality")
+        .and_then(|column| column.as_any().downcast_ref::<StringArray>())
+        .filter(|array| !array.is_null(row))
+        .map_or("text", |array| array.value(row))
+        .to_string();
+    let time = |name| {
+        batch
+            .column_by_name(name)
+            .and_then(|column| column.as_any().downcast_ref::<UInt64Array>())
+            .filter(|array| !array.is_null(row))
+            .map(|array| array.value(row))
+    };
+    let media = ragfs_core::MediaInfo {
+        modality,
+        start_ms: time("start_ms"),
+        end_ms: time("end_ms"),
+    };
+    media.validate().map_err(StoreError::Query)?;
+    Ok(media)
+}
+
 fn batch_to_search_results(batch: &RecordBatch) -> Result<Vec<SearchResult>, StoreError> {
     let mut results = Vec::new();
 
@@ -1657,6 +1708,7 @@ fn batch_to_search_results(batch: &RecordBatch) -> Result<Vec<SearchResult>, Sto
         let score = distances.map_or(0.0, |d| 1.0 - d.value(i));
 
         results.push(SearchResult {
+            media: media_from_batch(batch, i)?,
             chunk_id: Uuid::parse_str(chunk_id).unwrap_or_default(),
             file_path: PathBuf::from(file_path),
             content: content.to_string(),
@@ -1713,7 +1765,7 @@ fn batch_to_chunks(batch: &RecordBatch) -> Result<Vec<Chunk>, StoreError> {
         .column_by_name("end_line")
         .and_then(|c| c.as_any().downcast_ref::<UInt32Array>());
     let embeddings = batch
-        .column_by_name("embedding")
+        .column_by_name("vector")
         .and_then(|c| c.as_any().downcast_ref::<FixedSizeListArray>());
     let dir_paths = batch
         .column_by_name("dir_path")
@@ -1813,7 +1865,10 @@ fn batch_to_chunks(batch: &RecordBatch) -> Result<Vec<Chunk>, StoreError> {
                     arr.value(i).to_string()
                 }
             }),
-            metadata: ChunkMetadata::default(),
+            metadata: ChunkMetadata {
+                media: media_from_batch(batch, i)?,
+                ..Default::default()
+            },
         });
     }
 
@@ -1941,6 +1996,7 @@ mod tests {
             dir_depth: DirectoryScope::from_file_path(file_path).dir_depth,
             path_components: DirectoryScope::from_file_path(file_path).path_components,
             metadata: ChunkMetadata {
+                media: Default::default(),
                 indexed_at: Some(Utc::now()),
                 embedding_model: Some("test-model".to_string()),
                 token_count: None,
@@ -2533,6 +2589,7 @@ mod tests {
             dir_depth: DirectoryScope::from_file_path(file_path).dir_depth,
             path_components: DirectoryScope::from_file_path(file_path).path_components,
             metadata: ChunkMetadata {
+                media: Default::default(),
                 indexed_at: Some(Utc::now()),
                 embedding_model: Some("test-model".to_string()),
                 token_count: None,
@@ -3187,7 +3244,74 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_schema_v2_migrates_existing_index() {
+    async fn schema_v2_media_migration_is_idempotent() {
+        let temp = tempdir().unwrap();
+        let db_path = temp.path().join("old.lance");
+        let store = LanceStore::new(db_path.clone(), TEST_DIM);
+        let chunk = create_test_chunk(
+            Path::new("/project/old.txt"),
+            "old text",
+            create_random_embedding(TEST_DIM),
+            0,
+        );
+        let current = store.chunks_to_batch(&[chunk]).unwrap();
+        let indices: Vec<usize> = (0..current.num_columns() - 3).collect();
+        let old = current.project(&indices).unwrap();
+        let conn = connect(db_path.to_str().unwrap()).execute().await.unwrap();
+        let schema = old.schema();
+        conn.create_table(
+            CHUNKS_TABLE,
+            Box::new(RecordBatchIterator::new(vec![Ok(old)], schema))
+                as Box<dyn RecordBatchReader + Send>,
+        )
+        .execute()
+        .await
+        .unwrap();
+        store.init().await.unwrap();
+        let revision = store.index_revision().await.unwrap();
+        store.init().await.unwrap();
+        assert_eq!(store.index_revision().await.unwrap(), revision);
+        let chunks = store.get_all_chunks().await.unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].metadata.media, ragfs_core::MediaInfo::default());
+    }
+
+    #[tokio::test]
+    async fn media_roundtrips_through_storage_and_search() {
+        let temp = tempdir().unwrap();
+        let store = LanceStore::new(temp.path().join("media.lance"), TEST_DIM);
+        store.init().await.unwrap();
+        let embedding = create_random_embedding(TEST_DIM);
+        let mut chunk = create_test_chunk(
+            Path::new("/project/clip.mp4"),
+            "authentication clip",
+            embedding.clone(),
+            0,
+        );
+        chunk.metadata.media = ragfs_core::MediaInfo {
+            modality: "video".into(),
+            start_ms: Some(100),
+            end_ms: Some(900),
+        };
+        store.upsert_chunks(&[chunk.clone()]).await.unwrap();
+        let stored = store.get_chunks_for_file(&chunk.file_path).await.unwrap();
+        assert_eq!(stored[0].metadata.media, chunk.metadata.media);
+        assert_eq!(stored[0].embedding, chunk.embedding);
+        let query = search_query(embedding, vec![], DistanceMetric::Cosine);
+        assert_eq!(
+            store.search(query.clone()).await.unwrap()[0].media,
+            chunk.metadata.media
+        );
+        assert_eq!(
+            store.hybrid_search(query).await.unwrap()[0].media,
+            chunk.metadata.media
+        );
+        chunk.metadata.media.end_ms = Some(0);
+        assert!(store.upsert_chunks(&[chunk]).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_schema_v3_migrates_existing_index() {
         let temp = tempdir().unwrap();
         let db_path = temp.path().join("test.lance");
         let file_path = "/project/src/auth/login.rs";
@@ -3227,17 +3351,20 @@ mod tests {
                 .ends_with("src/auth/login.rs")
         );
 
-        // Second init is idempotent (sidecar already v2, columns present).
+        // Second init is idempotent (sidecar already v3, columns present).
         store.init().await.unwrap();
         let again = store
             .get_chunks_for_file(Path::new(file_path))
             .await
             .unwrap();
         assert_eq!(again[0].dir_path, "project/src/auth");
+        assert_eq!(again.len(), 1);
+        assert_eq!(again[0].metadata.media, ragfs_core::MediaInfo::default());
+        assert_eq!(results[0].media, ragfs_core::MediaInfo::default());
     }
 
     #[tokio::test]
-    async fn test_new_index_writes_schema_v2_sidecar() {
+    async fn test_new_index_writes_schema_v3_sidecar() {
         let temp = tempdir().unwrap();
         let db_path = temp.path().join("test.lance");
         let store = LanceStore::new(db_path, TEST_DIM).with_embedding_model("thenlper/gte-small");
@@ -3254,7 +3381,7 @@ mod tests {
             Some("thenlper/gte-small")
         );
         assert_eq!(sidecar.index_revision, 1);
-        assert_eq!(sidecar.chunks_schema_version, 2);
+        assert_eq!(sidecar.chunks_schema_version, CHUNKS_SCHEMA_VERSION);
     }
 
     #[tokio::test]

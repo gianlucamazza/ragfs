@@ -104,6 +104,9 @@ impl VectorStore for MemoryStore {
         if chunks.is_empty() {
             return Ok(());
         }
+        for chunk in chunks {
+            chunk.metadata.media.validate().map_err(StoreError::Query)?;
+        }
         let mut store = self.chunks.write().await;
         for chunk in chunks {
             store.insert(chunk.id, chunk.clone());
@@ -139,6 +142,7 @@ impl VectorStore for MemoryStore {
             .into_iter()
             .take(query.limit)
             .map(|(score, chunk)| SearchResult {
+                media: chunk.metadata.media.clone(),
                 chunk_id: chunk.id,
                 file_path: chunk.file_path.clone(),
                 content: chunk.content.clone(),
