@@ -484,3 +484,34 @@ export RAGFS_DATA_DIR=/mnt/ssd/ragfs
 - [Getting Started](GETTING_STARTED.md) - Quick start guide
 - [User Guide](USER_GUIDE.md) - Complete usage documentation
 - [Troubleshooting](TROUBLESHOOTING.md) - Common issues and solutions
+
+### Index integrity additions (0.3.0)
+
+Nested `.ragfsignore` files apply only within the index root. They use gitignore
+syntax, including comments, negation and directory patterns. Precedence is
+`.ragfsignore` > `.ignore` > `.gitignore`; deeper files of the same kind win.
+An ignored parent directory cannot be restored by a rule inside that directory.
+Hidden paths and secret-file exclusions still win over all negations.
+`index.honor_gitignore = false` disables these three ignore-file kinds.
+No user-global ignore file or ancestor file above the root is read.
+
+`[chunking].min_alnum_chars` defaults to `3`. Only Unicode letters (L*) and
+decimal digits (Nd) count; punctuation-only chunks are discarded before embedding.
+The applied value is stored in `ragfs-schema.json` and returned in query JSON and
+receipts. `ragfs index` rebuilds when this policy changes; the first index pass on
+a legacy index also applies the new policy. Mount users should run this index
+pass before mounting an existing index with a changed chunking policy.
+
+Opening an index with a different known model id or vector dimension fails with
+an explicit error. `ragfs index <path> --force` rebuilds the index tables and
+rewrites the fingerprint. Original source files and past receipts are retained.
+Query JSON and receipts also include `embedding_dim`. Old sidecars with no model
+id remain readable; fingerprints cannot retroactively prove their provenance.
+
+The `mount` Cargo feature is enabled by default. Build a CLI without FUSE using:
+
+```sh
+cargo build -p ragfs --no-default-features --features candle,lancedb
+```
+
+Such a binary reports `built without mount` for the mount command.

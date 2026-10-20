@@ -294,7 +294,8 @@ async fn create_components(
 
     let store = Arc::new(
         LanceStore::new(db_path, embedder_pool.dimension())
-            .with_embedding_model(embedder_pool.model_name()),
+            .with_embedding_model(embedder_pool.model_name())
+            .with_min_alnum_chars(config.chunking.min_alnum_chars),
     );
 
     let mut extractors = ExtractorRegistry::new();
@@ -444,6 +445,9 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if !cfg!(feature = "mount") && matches!(cli.command, Commands::Mount { .. }) {
+        anyhow::bail!("built without mount");
+    }
     maybe_daemonize_background_mount(&mut cli)?;
 
     tokio::runtime::Builder::new_multi_thread()
@@ -457,6 +461,7 @@ async fn run(cli: Cli) -> Result<()> {
     let config = load_config(&cli)?;
 
     match cli.command {
+        #[cfg(feature = "mount")]
         Commands::Mount {
             source,
             mountpoint,
@@ -586,6 +591,9 @@ async fn run(cli: Cli) -> Result<()> {
             }
         }
 
+        #[cfg(not(feature = "mount"))]
+        Commands::Mount { .. } => anyhow::bail!("built without mount"),
+
         Commands::Index {
             path,
             force,
@@ -601,6 +609,19 @@ async fn run(cli: Cli) -> Result<()> {
 
             let (store, extractors, chunkers, embedder) =
                 create_components(path.clone(), &config).await?;
+
+            if force {
+                store.rebuild().await.context("Failed to rebuild index")?;
+            } else if store.indexed_min_alnum_chars().await != Some(config.chunking.min_alnum_chars)
+            {
+                // Validate the model before changing policy; only --force may
+                // authorize rebuilding an index made by a different model.
+                store.init().await.context("Failed to initialize store")?;
+                store
+                    .rebuild()
+                    .await
+                    .context("Failed to apply chunk policy")?;
+            }
 
             let indexer_config = config.to_indexer_config_with(force, include_hidden);
 
@@ -693,6 +714,8 @@ async fn run(cli: Cli) -> Result<()> {
             store.init().await.context("Failed to initialize store")?;
             let index_revision = store.index_revision().await?;
             let embedding_model = embedder.model_name().to_string();
+            let embedding_dim = embedder.dimension();
+            let min_alnum_chars = store.indexed_min_alnum_chars().await;
 
             let limit = config.query_limit(limit);
             let use_hybrid = config.query_hybrid(hybrid);
@@ -730,6 +753,8 @@ async fn run(cli: Cli) -> Result<()> {
                 index_revision,
                 ragfs_version: env!("CARGO_PKG_VERSION").to_string(),
                 embedding_model,
+                embedding_dim,
+                min_alnum_chars,
                 receipt_path: None,
             };
 

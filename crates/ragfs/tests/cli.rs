@@ -665,3 +665,51 @@ fn reindex_purges_newly_excluded_files_without_force() {
         "purged secret must not be searchable: {json}"
     );
 }
+
+#[test]
+fn model_mismatch_writes_no_receipt_and_force_rebuilds() {
+    let h = Harness::new();
+    disable_hybrid(&h);
+    h.write_source("note.md", "a useful note");
+    index_ok(&mut h.ragfs(), &h.source);
+    let sidecar = index_dir(&h).join("ragfs-schema.json");
+    let mut metadata: serde_json::Value =
+        serde_json::from_slice(&fs::read(&sidecar).unwrap()).unwrap();
+    metadata["embedding_model"] = "different-same-width-model".into();
+    fs::write(&sidecar, serde_json::to_vec(&metadata).unwrap()).unwrap();
+    let receipt = h.data_dir.join("refused-query.json");
+    h.ragfs()
+        .args([
+            "query",
+            h.source.to_str().unwrap(),
+            "note",
+            "--save-receipt",
+            receipt.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("different-same-width-model"));
+    assert!(!receipt.exists());
+    h.ragfs()
+        .args(["index", h.source.to_str().unwrap(), "--force"])
+        .assert()
+        .success();
+    let metadata: serde_json::Value = serde_json::from_slice(&fs::read(&sidecar).unwrap()).unwrap();
+    assert_ne!(metadata["embedding_model"], "different-same-width-model");
+    let output = query_json(&h, "note");
+    assert_eq!(output["embedding_dim"], metadata["embedding_dim"]);
+    assert_eq!(output["min_alnum_chars"], 3);
+}
+
+#[test]
+fn chunk_floor_filters_before_embedding_and_is_recorded() {
+    let h = Harness::new();
+    disable_hybrid(&h);
+    h.write_source("punctuation.md", "--- #   ");
+    h.write_source("cjk.md", "中文啊");
+    index_ok(&mut h.ragfs(), &h.source);
+    let output = query_json(&h, "中文");
+    assert_eq!(output["min_alnum_chars"], 3);
+    assert!(!output.to_string().contains("punctuation.md"));
+    assert!(output.to_string().contains("cjk.md"));
+}

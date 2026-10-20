@@ -26,6 +26,9 @@ pub struct SchemaSidecar {
     /// Embedder model id that wrote this index, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embedding_model: Option<String>,
+    /// Alphanumeric floor used during indexing (absent on legacy indexes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_alnum_chars: Option<usize>,
     /// Monotonic retrieval revision. Missing on pre-receipt indexes (`0`).
     ///
     /// This is sidecar metadata, not a Lance table schema change:
@@ -41,6 +44,7 @@ impl Default for SchemaSidecar {
             chunks_schema_version: CHUNKS_SCHEMA_VERSION,
             embedding_dim: None,
             embedding_model: None,
+            min_alnum_chars: None,
             index_revision: 0,
         }
     }
@@ -194,6 +198,7 @@ mod tests {
             embedding_dim: Some(384),
             embedding_model: Some("thenlper/gte-small".into()),
             index_revision: 7,
+            min_alnum_chars: Some(3),
         };
         let json = serde_json::to_string(&original).unwrap();
         let parsed: SchemaSidecar = serde_json::from_str(&json).unwrap();

@@ -45,6 +45,7 @@ pub struct LanceStore {
     embedding_dim: usize,
     /// Embedder model id that should match this index, when known.
     embedding_model: Option<String>,
+    min_alnum_chars: Option<usize>,
     /// Database connection (lazy initialized)
     connection: RwLock<Option<Connection>>,
     /// Chunks table handle
@@ -64,6 +65,7 @@ impl LanceStore {
             db_path,
             embedding_dim,
             embedding_model: None,
+            min_alnum_chars: None,
             connection: RwLock::new(None),
             chunks_table: RwLock::new(None),
             files_table: RwLock::new(None),
@@ -75,6 +77,70 @@ impl LanceStore {
     pub fn with_embedding_model(mut self, model: impl Into<String>) -> Self {
         self.embedding_model = Some(model.into());
         self
+    }
+
+    /// Chunk policy for newly built indexes. Query opens preserve the stored value.
+    #[must_use]
+    pub fn with_min_alnum_chars(mut self, value: usize) -> Self {
+        self.min_alnum_chars = Some(value);
+        self
+    }
+
+    /// The actual policy that produced the index, absent on legacy sidecars.
+    pub async fn indexed_min_alnum_chars(&self) -> Option<usize> {
+        self.read_schema_sidecar()
+            .await
+            .and_then(|s| s.min_alnum_chars)
+    }
+
+    /// Explicitly rebuild this index before indexing with a new model or policy.
+    /// Existing retrieval receipts are retained; their revisions remain historical.
+    pub async fn rebuild(&self) -> Result<(), StoreError> {
+        let revision = self
+            .read_schema_sidecar()
+            .await
+            .map_or(1, |s| s.index_revision.saturating_add(1));
+        let conn = self.get_connection().await?;
+        let tables = conn
+            .table_names()
+            .execute()
+            .await
+            .map_err(|e| StoreError::Init(e.to_string()))?;
+        for name in [CHUNKS_TABLE, FILES_TABLE] {
+            if tables.iter().any(|table| table == name) {
+                conn.drop_table(name, &[])
+                    .await
+                    .map_err(|e| StoreError::Init(format!("Failed to rebuild {name}: {e}")))?;
+            }
+        }
+        *self.chunks_table.write().await = None;
+        *self.files_table.write().await = None;
+        let sidecar = self.sidecar_with_revision(SchemaSidecar::default(), revision);
+        self.write_schema_sidecar(&sidecar).await?;
+        self.init().await
+    }
+
+    async fn ensure_model_matches(&self) -> Result<(), StoreError> {
+        if let Some(sidecar) = self.read_schema_sidecar().await {
+            if let (Some(stored), Some(requested)) = (
+                sidecar.embedding_model.as_deref(),
+                self.embedding_model.as_deref(),
+            ) && stored != requested
+            {
+                return Err(StoreError::Schema(format!(
+                    "Index embedding model {stored:?} does not match requested model {requested:?}; run ragfs index <path> --force to rebuild"
+                )));
+            }
+            if let Some(stored) = sidecar.embedding_dim
+                && stored != self.embedding_dim
+            {
+                return Err(StoreError::Schema(format!(
+                    "Index embedding dimension {stored} does not match requested dimension {}; run ragfs index <path> --force to rebuild",
+                    self.embedding_dim
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Get the database path.
@@ -368,6 +434,9 @@ impl LanceStore {
         }
         if sidecar.embedding_model.is_none() {
             sidecar.embedding_model.clone_from(&self.embedding_model);
+        }
+        if sidecar.min_alnum_chars.is_none() {
+            sidecar.min_alnum_chars = self.min_alnum_chars;
         }
         sidecar.index_revision = index_revision;
         sidecar
@@ -808,6 +877,7 @@ impl LanceStore {
 impl VectorStore for LanceStore {
     async fn init(&self) -> Result<(), StoreError> {
         info!("Initializing LanceDB at {:?}", self.db_path);
+        self.ensure_model_matches().await?;
 
         // Ensure directory exists
         if let Some(parent) = self.db_path.parent() {
@@ -3241,5 +3311,72 @@ mod tests {
         assert_eq!(store.index_revision().await.unwrap(), 1);
         store.stats().await.unwrap();
         assert_eq!(store.index_revision().await.unwrap(), 1);
+    }
+    #[tokio::test]
+    async fn different_same_width_model_requires_explicit_rebuild() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("test.lance");
+        let old = LanceStore::new(path.clone(), TEST_DIM).with_embedding_model("model-a");
+        old.init().await.unwrap();
+        old.upsert_chunks(&[create_test_chunk(
+            Path::new("old.md"),
+            "old",
+            create_random_embedding(TEST_DIM),
+            0,
+        )])
+        .await
+        .unwrap();
+        let new = LanceStore::new(path, TEST_DIM).with_embedding_model("model-b");
+        let error = new.init().await.unwrap_err().to_string();
+        assert!(
+            error.contains("model-a") && error.contains("model-b") && error.contains("--force")
+        );
+        new.rebuild().await.unwrap();
+        assert!(
+            new.get_chunks_for_file(Path::new("old.md"))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let metadata = new.read_schema_sidecar().await.unwrap();
+        assert_eq!(metadata.embedding_model.as_deref(), Some("model-b"));
+        assert_eq!(metadata.embedding_dim, Some(TEST_DIM));
+    }
+
+    #[tokio::test]
+    async fn hybrid_finds_rows_inserted_after_empty_fts_creation() {
+        let temp = tempdir().unwrap();
+        let store = LanceStore::new(temp.path().join("test.lance"), TEST_DIM);
+        store.init().await.unwrap();
+        let embedding = create_random_embedding(TEST_DIM);
+        store
+            .upsert_chunks(&[create_test_chunk(
+                Path::new("fresh.md"),
+                "freshunique retrieval marker",
+                embedding.clone(),
+                0,
+            )])
+            .await
+            .unwrap();
+        let mut query = search_query(embedding, vec![], DistanceMetric::Cosine);
+        query.text = Some("freshunique".into());
+        let results = store.hybrid_search(query).await.unwrap();
+        assert!(
+            results
+                .iter()
+                .any(|hit| hit.file_path == Path::new("fresh.md"))
+        );
+        // Also assert the lexical leg itself, so vector fallback cannot mask stale FTS.
+        let table = store.get_chunks_table().await.unwrap();
+        let batches: Vec<RecordBatch> = table
+            .query()
+            .full_text_search(FullTextSearchQuery::new("freshunique".to_string()))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
     }
 }

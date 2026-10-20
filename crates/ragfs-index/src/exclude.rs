@@ -317,7 +317,7 @@ fn gitignore_excludes(root: &Path, path: &Path) -> bool {
         let mut ignored = false;
         // File kind takes precedence over depth; the nearest file of the
         // same kind wins. All evaluation stays inside the index root.
-        for name in [".gitignore", ".ignore"] {
+        for name in [".gitignore", ".ignore", ".ragfsignore"] {
             for dir in &dirs {
                 let ignore_path = dir.join(name);
                 if !ignore_path.is_file() {
@@ -640,5 +640,27 @@ mod tests {
             matcher.is_excluded(&tmp.path().join("SERVER.PEM")),
             cfg!(any(target_os = "macos", target_os = "windows"))
         );
+    }
+    #[test]
+    fn nested_ragfsignore_is_bounded_and_has_highest_priority() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join("root");
+        fs::create_dir_all(&root).unwrap();
+        write(tmp.path(), ".ragfsignore", "*.md\n");
+        write(&root, ".ignore", "*.md\n");
+        write(&root, ".ragfsignore", "# keep notes\n!*.md\ncache/\n");
+        write(&root, "sub/.ragfsignore", "drop.md\n!secrets.md\n");
+        write(&root, "sub/keep.md", "keep");
+        write(&root, "sub/drop.md", "drop");
+        write(&root, "sub/secrets.md", "secret");
+        write(&root, "cache/note.md", "cached");
+        let matcher = matcher_at(&root);
+        assert_eq!(matcher.collect_files(), vec![root.join("sub/keep.md")]);
+        for name in ["sub/drop.md", "sub/secrets.md", "cache/note.md"] {
+            assert!(matcher.is_excluded(&root.join(name)));
+        }
+        fs::remove_file(root.join(".ignore")).unwrap();
+        fs::remove_file(root.join(".ragfsignore")).unwrap();
+        assert!(matcher.should_process(&root.join("sub/keep.md")));
     }
 }

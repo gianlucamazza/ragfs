@@ -150,6 +150,7 @@ impl Config {
             include_secret_files: self.index.include_secret_files,
             honor_gitignore: self.index.honor_gitignore,
             purge_excluded: self.index.purge_excluded,
+            min_alnum_chars: self.chunking.min_alnum_chars,
         }
     }
 
@@ -338,6 +339,9 @@ impl Default for EmbeddingConfig {
 /// Chunking-related configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChunkingConfig {
+    /// Minimum Unicode letters or decimal digits per indexed chunk.
+    #[serde(default = "default_min_alnum_chars")]
+    pub min_alnum_chars: usize,
     /// Target chunk size (tokens)
     #[serde(default = "default_target_size")]
     pub target_size: usize,
@@ -357,6 +361,10 @@ pub struct ChunkingConfig {
     /// Maximum hierarchy depth
     #[serde(default = "default_max_depth")]
     pub max_depth: u8,
+}
+
+fn default_min_alnum_chars() -> usize {
+    3
 }
 
 fn default_target_size() -> usize {
@@ -382,6 +390,7 @@ fn default_max_depth() -> u8 {
 impl Default for ChunkingConfig {
     fn default() -> Self {
         Self {
+            min_alnum_chars: default_min_alnum_chars(),
             target_size: default_target_size(),
             max_size: default_max_size(),
             overlap: default_overlap(),

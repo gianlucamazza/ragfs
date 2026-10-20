@@ -30,6 +30,7 @@ futures.workspace = true
 notify.workspace = true
 notify-debouncer-full.workspace = true
 ignore.workspace = true
+unicode-general-category = "1"
 blake3.workspace = true
 serde.workspace = true
 tracing.workspace = true
