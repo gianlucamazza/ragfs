@@ -888,6 +888,9 @@ async def ragfs_search(
                 "file_path": result.document.metadata.get("file_path", "unknown"),
                 "content": result.document.page_content[:500],  # Truncate for readability
                 "score": round(result.score, 4),
+                "modality": result.document.metadata.get("modality", "text"),
+                "start_ms": int(result.document.metadata["start_ms"]) if "start_ms" in result.document.metadata else None,
+                "end_ms": int(result.document.metadata["end_ms"]) if "end_ms" in result.document.metadata else None,
                 "metadata": result.document.metadata,
             })
 

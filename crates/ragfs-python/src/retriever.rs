@@ -156,6 +156,7 @@ impl RagfsRetriever {
                 .into_iter()
                 .map(|r| {
                     let mut metadata: HashMap<String, String> = r.metadata;
+                    r.media.write_metadata(&mut metadata);
                     metadata.insert(
                         "file_path".to_string(),
                         r.file_path.to_string_lossy().to_string(),
@@ -232,6 +233,7 @@ impl RagfsRetriever {
                 .into_iter()
                 .map(|r| {
                     let mut metadata = r.metadata;
+                    r.media.write_metadata(&mut metadata);
                     metadata.insert(
                         "file_path".to_string(),
                         r.file_path.to_string_lossy().to_string(),

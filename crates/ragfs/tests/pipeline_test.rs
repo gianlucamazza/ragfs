@@ -107,6 +107,7 @@ fn create_chunk(
         dir_depth: scope.dir_depth,
         path_components: scope.path_components,
         metadata: ChunkMetadata {
+            media: Default::default(),
             embedding_model: Some("mock-embedder".to_string()),
             indexed_at: Some(chrono::Utc::now()),
             token_count: Some(token_count),

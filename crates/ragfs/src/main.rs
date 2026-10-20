@@ -776,6 +776,7 @@ async fn run(cli: Cli) -> Result<()> {
                 results: results
                     .iter()
                     .map(|r| ResultItem {
+                        media: r.media.clone(),
                         file: r.file_path.to_string_lossy().to_string(),
                         score: r.score,
                         content: truncate(&r.content, 200),

@@ -396,7 +396,7 @@ summary skipped this phase; the ADR includes it, so it is in the plan.
 
 | Field | Value |
 |-------|--------|
-| Status | Not started |
+| Status | Implemented; migration and full CI validation pending |
 | Issue | (#188) |
 | Size | M (~250–500 LOC) |
 | Gate | CoS merge |

@@ -8,7 +8,8 @@ use std::sync::Arc;
 ///
 /// Version 1: pre-scope columns (no `dir_path` / `dir_depth` / `path_components`).
 /// Version 2: directory-scope columns for `ragfs query --scope`.
-pub const CHUNKS_SCHEMA_VERSION: u32 = 2;
+/// Version 3: source modality and nullable millisecond ranges.
+pub const CHUNKS_SCHEMA_VERSION: u32 = 3;
 
 /// Sidecar written beside the Lance database (`…/indices/<hash>/ragfs-schema.json`).
 pub const SCHEMA_SIDECAR_FILENAME: &str = "ragfs-schema.json";
@@ -80,6 +81,20 @@ pub fn missing_scope_columns(schema: &Schema) -> Vec<Field> {
     missing
 }
 
+/// Missing additive media columns. Legacy rows are backfilled to text/null/null.
+#[must_use]
+pub fn missing_media_columns(schema: &Schema) -> Vec<Field> {
+    [
+        ("modality", DataType::Utf8),
+        ("start_ms", DataType::UInt64),
+        ("end_ms", DataType::UInt64),
+    ]
+    .into_iter()
+    .filter(|(name, _)| schema.field_with_name(name).is_err())
+    .map(|(name, kind)| Field::new(name, kind, true))
+    .collect()
+}
+
 /// Schema for the chunks table.
 #[must_use]
 pub fn chunks_schema(embedding_dim: usize) -> Schema {
@@ -126,6 +141,9 @@ pub fn chunks_schema(embedding_dim: usize) -> Schema {
         Field::new("dir_path", DataType::Utf8, false),
         Field::new("dir_depth", DataType::UInt16, false),
         Field::new("path_components", DataType::Utf8, false),
+        Field::new("modality", DataType::Utf8, true),
+        Field::new("start_ms", DataType::UInt64, true),
+        Field::new("end_ms", DataType::UInt64, true),
     ])
 }
 
@@ -189,10 +207,9 @@ mod tests {
     }
 
     #[test]
-    fn old_sidecar_without_revision_does_not_bump_schema_version() {
+    fn old_sidecar_deserialization_preserves_recorded_version() {
         let s: SchemaSidecar = serde_json::from_str(r#"{"chunks_schema_version":2}"#).unwrap();
-        assert_eq!(s.chunks_schema_version, CHUNKS_SCHEMA_VERSION);
-        assert_eq!(CHUNKS_SCHEMA_VERSION, 2);
+        assert_eq!(s.chunks_schema_version, 2);
     }
 
     #[test]

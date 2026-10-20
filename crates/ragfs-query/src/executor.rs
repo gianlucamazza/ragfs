@@ -319,6 +319,7 @@ mod tests {
 
     fn create_test_result(path: &str, content: &str, score: f32) -> SearchResult {
         SearchResult {
+            media: Default::default(),
             chunk_id: Uuid::new_v4(),
             file_path: PathBuf::from(path),
             content: content.to_string(),

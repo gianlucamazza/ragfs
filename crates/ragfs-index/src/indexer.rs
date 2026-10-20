@@ -1046,6 +1046,15 @@ fn build_chunk(
         dir_depth: scope.dir_depth,
         path_components: scope.path_components,
         metadata: ChunkMetadata {
+            media: ragfs_core::MediaInfo {
+                modality: if matches!(content_type, ContentType::ImageCaption) {
+                    "image"
+                } else {
+                    "text"
+                }
+                .into(),
+                ..Default::default()
+            },
             embedding_model: Some(model_name.to_string()),
             indexed_at: Some(now),
             token_count: None,

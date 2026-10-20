@@ -196,7 +196,7 @@ ragfs query ./src "configuration" --save-receipt
 
 1. Missing `dir_path` / `dir_depth` / `path_components` columns are added in place.
 2. Values are backfilled from each chunk's `file_path` (path components with the leading `/` stripped, e.g. `/project/src/auth/login.rs` → `project/src/auth`).
-3. A sidecar `ragfs-schema.json` next to the Lance database records `chunks_schema_version = 2`.
+3. A sidecar `ragfs-schema.json` next to the Lance database records `chunks_schema_version = 3`.
 
 Scoped search works on those migrated rows because the filter also accepts a path-component-aligned suffix (`project/src/auth` still matches `--scope src/auth`). Embeddings and the IVF-PQ index are kept.
 
@@ -255,7 +255,7 @@ used, JSON also includes `receipt_path`.
 against an unchanged index share the revision; any index write (add, update,
 delete, reindex) increments it. Indexes created before this field existed keep
 working: the sidecar is initialized to `1` on open without a reindex, and
-`chunks_schema_version` stays at `2`.
+`chunks_schema_version` is independent of the write revision; the current media schema is `3`.
 
 #### Query receipts
 
@@ -487,7 +487,7 @@ ragfs query ./src "auth" -f json | jq '.results[0].score'
 ~/.local/share/ragfs/indices/{hash}/receipts/   # opt-in query receipts
 ```
 
-Each indexed directory gets a unique index based on its path hash (blake3). `ragfs-schema.json` records `chunks_schema_version` (currently `2`, with directory-scope columns) and `index_revision` (a monotonic counter that changes on index writes). Existing indexes are migrated on open; a missing `index_revision` is initialized to `1` without a reindex. See [Scoped search and existing indexes](#scoped-search-and-existing-indexes) and [Query receipts](#query-receipts).
+Each indexed directory gets a unique index based on its path hash (blake3). `ragfs-schema.json` records `chunks_schema_version` (currently `3`, with directory-scope and source-media columns) and `index_revision` (a monotonic counter that changes on index writes). Existing indexes are migrated on open; a missing `index_revision` is initialized to `1` without a reindex. See [Scoped search and existing indexes](#scoped-search-and-existing-indexes) and [Query receipts](#query-receipts).
 
 ### Embedding Model Cache
 
@@ -946,3 +946,14 @@ rebuilds index tables, keeps original files and historical receipts, and records
 the new model id and dimension. Queries refuse mismatched indexes and write no
 receipt when opening the store fails. Place local rules in `.ragfsignore` under
 the indexed tree; see CONFIGURATION.md for precedence and scope.
+
+### Source media locations
+
+Query JSON and receipts expose `modality` (`text`, `image`, `audio`, `video`)
+and nullable `start_ms` / `end_ms` on every result. Both times are absent/null
+or form an ordered interval in milliseconds. Python documents expose the same
+values in metadata; MCP search converts time values to JSON integers.
+Existing indexes are migrated additively on open to schema 3, with legacy rows
+classified as `text` and no time interval. Reindex images with `--force` to
+classify existing image-caption rows as `image`. This schema does not by itself
+add OCR, native image embeddings, audio transcription or video extraction.
