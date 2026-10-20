@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import subprocess
 from pathlib import Path
 
 from .facts import answer, validate_facts
@@ -41,17 +42,27 @@ def main() -> int:
     run = commands.add_parser("run")
     run.add_argument("--protocol", type=Path, required=True)
     run.add_argument("--dry-run", action="store_true")
+    run.add_argument("--binary", type=Path)
+    run.add_argument("--snapshot", type=Path)
+    run.add_argument("--model-manifest", type=Path)
+    run.add_argument("--output", type=Path)
     args = parser.parse_args()
     try:
         protocol, pins, facts, queries = validate(args.protocol)
         if not args.dry_run:
-            raise ValueError("Scored adapters are a separate phase; use --dry-run")
+            if not all((args.binary, args.snapshot, args.model_manifest, args.output)):
+                raise ValueError("Measured runs require --binary, --snapshot, --model-manifest and a new --output directory")
+            from .runner import run as run_scenario
+            run_scenario(args.protocol, protocol, pins, facts, queries, binary=args.binary,
+                         snapshot=args.snapshot, model_manifest=args.model_manifest, output=args.output)
+            print(f"Raw evidence written to {args.output / 'results.json'}")
+            return 0
         print(json.dumps({"schema_version": 1, "protocol_id": protocol["protocol_id"],
                           "validation": "passed", "n_revisions": len(facts),
                           "n_queries": len(queries), "pins": len(pins),
                           "metrics": "TBD (to be measured)"}, indent=2))
         return 0
-    except (ValueError, KeyError, TypeError, OSError) as error:
+    except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as error:
         print(f"Benchmark validation failed: {error}", file=sys.stderr)
         return 1
 
