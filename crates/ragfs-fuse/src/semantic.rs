@@ -371,6 +371,32 @@ impl SemanticManager {
         manager
     }
 
+    /// Construct a manager whose plan execution always uses recoverable, jailed
+    /// operations. `data_dir` must match the caller's trash/history/undo tools.
+    pub fn with_safety(
+        source: PathBuf,
+        store: Option<Arc<dyn VectorStore>>,
+        embedder: Option<Arc<dyn Embedder>>,
+        config: Option<SemanticConfig>,
+        data_dir: PathBuf,
+    ) -> Self {
+        let safety = Arc::new(crate::SafetyManager::new(
+            &source,
+            Some(crate::SafetyConfig {
+                data_dir,
+                trash_retention_days: 7,
+                soft_delete: true,
+            }),
+        ));
+        let ops = Arc::new(crate::OpsManager::with_safety(
+            source.clone(),
+            store.clone(),
+            None,
+            safety,
+        ));
+        Self::with_ops(source, store, embedder, config, ops)
+    }
+
     /// Set the operations manager.
     pub fn set_ops_manager(&mut self, ops_manager: Arc<crate::ops::OpsManager>) {
         self.ops_manager = Some(ops_manager);
@@ -1838,5 +1864,71 @@ mod tests {
             SemanticManager::canonical_or_owned(&dotted_nested)
                 .starts_with(SemanticManager::canonical_or_owned(&scope))
         );
+    }
+}
+
+#[cfg(test)]
+mod safe_execution_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn safe_plan_delete_is_recoverable_and_cannot_escape_root() {
+        let source = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let file = source.path().join("note.txt");
+        let external = outside.path().join("private.txt");
+        fs::write(&file, "recoverable").unwrap();
+        fs::write(&external, "untouched").unwrap();
+        let manager = SemanticManager::with_safety(
+            source.path().to_path_buf(),
+            None,
+            None,
+            Some(SemanticConfig {
+                data_dir: data.path().to_path_buf(),
+                ..Default::default()
+            }),
+            data.path().to_path_buf(),
+        );
+        for (path, succeeds) in [(&file, true), (&external, false)] {
+            let id = Uuid::new_v4();
+            let plan = SemanticPlan {
+                id,
+                created_at: Utc::now(),
+                operation: PlanOperation::Cleanup {
+                    scope: PathBuf::from("."),
+                },
+                description: "test".into(),
+                actions: vec![PlanAction {
+                    action: ActionType::Delete { path: path.clone() },
+                    confidence: 1.0,
+                    reason: "test".into(),
+                }],
+                status: PlanStatus::Pending,
+                impact: PlanImpact::default(),
+            };
+            manager.pending_plans.write().await.insert(id, plan);
+            let result = manager.approve_plan(id).await.unwrap();
+            assert_eq!(result.status == PlanStatus::Completed, succeeds);
+            assert!(manager.approve_plan(id).await.is_err());
+        }
+        assert!(!file.exists());
+        assert_eq!(fs::read_to_string(&external).unwrap(), "untouched");
+        // Reopen the same safety store, as a separate MCP undo call does.
+        let safety = crate::SafetyManager::new(
+            &source.path().to_path_buf(),
+            Some(crate::SafetyConfig {
+                data_dir: data.path().to_path_buf(),
+                trash_retention_days: 7,
+                soft_delete: true,
+            }),
+        );
+        let entry = safety
+            .read_history(None)
+            .into_iter()
+            .find(|e| e.success && e.reversible)
+            .unwrap();
+        safety.undo(entry.id).await.unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "recoverable");
     }
 }

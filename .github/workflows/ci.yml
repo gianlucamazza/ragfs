@@ -341,7 +341,7 @@ jobs:
   ci:
     name: CI
     runs-on: ubuntu-latest
-    needs: [fmt, cargo-deny, check, clippy, test, doc, msrv, no-mount]
+    needs: [fmt, cargo-deny, check, clippy, test, doc, msrv, no-mount, python-lint, python-test, python-integration, test-with-models]
     if: always()
     steps:
       - name: Required jobs passed or skipped
@@ -354,6 +354,10 @@ jobs:
           DOC: ${{ needs.doc.result }}
           MSRV: ${{ needs.msrv.result }}
           NO_MOUNT: ${{ needs.no-mount.result }}
+          PYTHON_LINT: ${{ needs.python-lint.result }}
+          PYTHON_TEST: ${{ needs.python-test.result }}
+          PYTHON_INTEGRATION: ${{ needs.python-integration.result }}
+          MODELS: ${{ needs.test-with-models.result }}
         run: |
           set -euo pipefail
           ok() { [ "$1" = success ] || [ "$1" = skipped ]; }
@@ -366,4 +370,8 @@ jobs:
           ok "$DOC"    || { echo "Documentation: $DOC"; rc=1; }
           ok "$MSRV"   || { echo "MSRV (1.91): $MSRV"; rc=1; }
           ok "$NO_MOUNT" || { echo "No mount: $NO_MOUNT"; rc=1; }
+          ok "$PYTHON_LINT" || { echo "Python lint: $PYTHON_LINT"; rc=1; }
+          ok "$PYTHON_TEST" || { echo "Python tests: $PYTHON_TEST"; rc=1; }
+          ok "$PYTHON_INTEGRATION" || { echo "Python integration: $PYTHON_INTEGRATION"; rc=1; }
+          ok "$MODELS" || { echo "Models: $MODELS"; rc=1; }
           exit "$rc"
