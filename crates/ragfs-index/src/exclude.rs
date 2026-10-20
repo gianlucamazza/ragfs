@@ -146,8 +146,20 @@ impl ExclusionMatcher {
         if !self.options.include_hidden && self.is_hidden_under_root(path) {
             return true;
         }
-        if override_ignores(&self.overrides, path) {
+        let Ok(relative) = path.strip_prefix(&self.root) else {
             return true;
+        };
+        let mut candidate = self.root.clone();
+        let components: Vec<_> = relative.components().collect();
+        for (index, component) in components.iter().enumerate() {
+            candidate.push(component.as_os_str());
+            if override_ignores(
+                &self.overrides,
+                &candidate,
+                index + 1 < components.len() || path.is_dir(),
+            ) {
+                return true;
+            }
         }
         self.options.honor_gitignore && gitignore_excludes(&self.root, path)
     }
@@ -245,8 +257,7 @@ fn add_ignore_override(builder: &mut OverrideBuilder, pattern: &str) {
     }
 }
 
-fn override_ignores(overrides: &Override, path: &Path) -> bool {
-    let is_dir = path.is_dir();
+fn override_ignores(overrides: &Override, path: &Path, is_dir: bool) -> bool {
     overrides.matched(path, is_dir).is_ignore()
         || overrides
             .matched(path_for_override(path), is_dir)
@@ -640,5 +651,20 @@ mod tests {
             matcher.is_excluded(&tmp.path().join("SERVER.PEM")),
             cfg!(any(target_os = "macos", target_os = "windows"))
         );
+    }
+
+    #[test]
+    fn directory_override_also_excludes_direct_child_events() {
+        let temp = tempdir().unwrap();
+        write(temp.path(), "cache/note.md", "cached");
+        let matcher = ExclusionMatcher::new(
+            temp.path(),
+            ExclusionOptions {
+                extra_excludes: vec!["cache/".into()],
+                ..ExclusionOptions::default()
+            },
+        );
+        assert!(matcher.is_excluded(&temp.path().join("cache/note.md")));
+        assert!(matcher.collect_files().is_empty());
     }
 }
