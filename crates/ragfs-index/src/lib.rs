@@ -40,8 +40,13 @@
 //! }
 //! ```
 
+pub mod exclude;
 pub mod indexer;
 pub mod watcher;
 
+pub use exclude::{
+    DEFAULT_NOISE_PATTERNS, DEFAULT_SECRET_PATTERNS, ExclusionMatcher, ExclusionOptions,
+    default_exclude_patterns,
+};
 pub use indexer::{IndexUpdate, IndexerConfig, IndexerService, path_matches_pattern};
 pub use watcher::FileWatcher;

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking / behaviour changes
+
+- **BREAKING**: Safer default exclusions for indexing (planned 0.3.0). Hidden files *and* hidden directories under the index root are skipped; a secret-file denylist (`.env*`, `*.pem` / `*.key`, `id_rsa` / `id_ed25519`, credentials files, `.netrc` / `.npmrc` / `.pypirc`, kube config, and similar) is always on. `--include-hidden` / `index.include_hidden` does not disable that denylist. CLI, mount, MCP (via the CLI-built index), and library `IndexerConfig` share one `ignore`-crate matcher. `.gitignore` / `.ignore` under the index root are honoured by default (no parent walk, no global gitignore); `!` rules cannot re-include secrets. Every `ragfs index` purges store rows for newly excluded paths (not only `--force`). See ADR-010.
+
+### Added
+
+- `ragfs index --include-hidden` and `ragfs mount --include-hidden`, plus `[index]` keys `include_hidden`, `include_secret_files`, `honor_gitignore`, and `purge_excluded`.
+- `docs/community-forks.md` crediting sophie4869/ragfs (hidden/secret excludes) and manojtummala/SemPOSIX (scoped search, #60).
+
+### Documentation
+
+- `docs/CONFIGURATION.md` and `docs/USER_GUIDE.md` document the shared defaults, secret denylist, hidden-root exception, and purge-on-reindex.
+
 ## [0.2.2] - 2026-10-19
 
 MCP server hardening for the local stdio `ragfs-mcp` package (issue #164, PRs #166–#172), plus accepted ADR-009 (docs-only transparent memory benchmark harness) and smaller Rust fixes (#161, #162).

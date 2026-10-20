@@ -52,6 +52,9 @@ fuser = "0.18"
 notify = "8.2"
 notify-debouncer-full = "0.7"
 
+# Gitignore-style walking / overrides (ADR-010)
+ignore = "0.4"
+
 # Vector store.
 #
 # Pinned to the 0.37 line on purpose: lancedb 0.38.0 does not build with its

@@ -120,6 +120,7 @@ ragfs index <PATH> [OPTIONS]
 |--------|-------|-------------|
 | `--force` | `-f` | Reindex every eligible file (skip content-hash reuse; rewrite directory-scope fields). Does **not** add Lance columns by itself — schema upgrades run automatically on open. |
 | `--watch` | `-w` | Watch for changes after initial indexing |
+| `--include-hidden` | | Index hidden files and directories under the path. Does **not** disable the secret-file denylist. |
 
 **Examples:**
 
@@ -130,19 +131,21 @@ ragfs index ./src
 # Force reindex
 ragfs index ./src --force
 
+# Include dotfiles (secrets such as *.pem / id_rsa stay excluded)
+ragfs index ~/.notes --include-hidden
+
 # Continuous mode
 ragfs index ./src --watch
 ```
 
-**Default Exclusions:**
+**Default exclusions** (same list for CLI, mount, and library `IndexerConfig`):
 
-The following patterns are excluded by default:
-- `**/.*` (hidden files)
-- `**/.git/**`
-- `**/node_modules/**`
-- `**/target/**`
-- `**/__pycache__/**`
-- `**/*.lock`
+- Hidden files **and** hidden directories under the index root. The root itself may be hidden (`ragfs index ~/.notes` still indexes `todo.md`).
+- Secret-file denylist (gitleaks / TruffleHog-style names): `.env` / `.env.*` / `*.env`, `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`, `*.key` / `*.pem` / `*.p12` / `*.pfx` / `*.kdbx` / `*.jks` / `*.keystore` / `*.ppk`, `id_rsa` / `id_dsa` / `id_ecdsa` / `id_ed25519` (not `id_*.pub`), `secrets.*`, `credentials.*`, `.aws/credentials`, `.kube/config`.
+- Noise globs: `**/node_modules/**`, `**/.git/**`, `**/target/**`, `**/__pycache__/**`, `**/*.pyc`, `**/.venv/**`, `**/venv/**`, `**/*.lock`.
+- `.gitignore` / `.ignore` under the index root (`honor_gitignore = true`; no parent walk, no global gitignore). A `!` rule cannot re-include a secret or hidden path.
+
+Every `ragfs index` purges store rows for paths that are now excluded (not only `--force`). Re-run `ragfs index <path>` once per index after upgrade.
 
 ### ragfs query
 
@@ -290,6 +293,7 @@ ragfs mount <SOURCE> <MOUNTPOINT> [OPTIONS]
 |--------|-------|-------------|
 | `--foreground` | `-f` | Run in foreground (don't daemonize) |
 | `--allow-other` | | Allow other users to access the mount |
+| `--include-hidden` | | Index hidden files and directories under the source. Does **not** disable the secret-file denylist. |
 
 **Examples:**
 
@@ -389,7 +393,11 @@ allow_other = false
 
 [index]
 include = ["**/*"]
-exclude = ["**/node_modules/**", "**/.git/**", "**/target/**"]
+exclude = ["**/node_modules/**", "**/.git/**", "**/target/**", "**/__pycache__/**", "**/*.pyc", "**/.venv/**", "**/venv/**", "**/*.lock"]
+include_hidden = false
+include_secret_files = false
+honor_gitignore = true
+purge_excluded = true
 max_file_size = 52428800  # 50MB
 debounce_ms = 500
 

@@ -29,6 +29,7 @@ tokio-stream.workspace = true
 futures.workspace = true
 notify.workspace = true
 notify-debouncer-full.workspace = true
+ignore.workspace = true
 blake3.workspace = true
 serde.workspace = true
 tracing.workspace = true

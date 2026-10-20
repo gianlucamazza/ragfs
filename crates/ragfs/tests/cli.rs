@@ -498,3 +498,170 @@ fn query_works_after_old_sidecar_without_revision() {
     let status_json = parse_json_stdout(&status.stdout);
     assert!(status_json["index_revision"].as_u64().unwrap() >= 1);
 }
+
+fn status_json(h: &Harness) -> serde_json::Value {
+    let output = h
+        .ragfs()
+        .args(["--format", "json", "status", h.source.to_str().unwrap()])
+        .output()
+        .expect("run ragfs status");
+    let blob = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.status.success(), "status should succeed: {blob}");
+    parse_json_stdout(&output.stdout)
+}
+
+fn query_blob_contains_excluded(json: &serde_json::Value) -> bool {
+    let text = json.to_string();
+    text.contains("SECRETPEM_TOKEN")
+        || text.contains("HIDDENFILE_TOKEN")
+        || text.contains("HIDDENDIR_TOKEN")
+        || text.contains("SSHKEY_TOKEN")
+        || text.contains("server.pem")
+        || text.contains("id_rsa")
+        || text.contains(".obsidian")
+}
+
+#[test]
+fn index_excludes_hidden_and_secret_files_by_default() {
+    let h = Harness::new();
+    disable_hybrid(&h);
+    h.write_source("notes/keyboard.md", "VISIBLE_TOKEN keyboard shortcuts");
+    h.write_source(".hidden.md", "HIDDENFILE_TOKEN should not index");
+    h.write_source(".obsidian/x.md", "HIDDENDIR_TOKEN obsidian workspace");
+    h.write_source("server.pem", "SECRETPEM_TOKEN private cert");
+    h.write_source(".ssh/id_rsa", "SSHKEY_TOKEN begins");
+    h.write_source(".aws/credentials", "AWSKEY_TOKEN aws");
+    index_ok(&mut h.ragfs(), &h.source);
+
+    let status = status_json(&h);
+    assert_eq!(
+        status["total_files"].as_u64().unwrap(),
+        1,
+        "only the visible note is indexed: {status}"
+    );
+    let json = query_json(&h, "VISIBLE_TOKEN");
+    assert!(
+        !query_blob_contains_excluded(&json),
+        "CLI query must not return excluded paths: {json}"
+    );
+}
+
+#[test]
+fn include_hidden_still_blocks_secret_files() {
+    let h = Harness::new();
+    disable_hybrid(&h);
+    h.write_source(".notes.md", "DOTFILE_TOKEN hidden but not secret");
+    h.write_source("server.pem", "SECRETPEM_TOKEN private cert");
+    h.write_source("notes/keyboard.md", "VISIBLE_TOKEN keyboard");
+
+    h.ragfs()
+        .args([
+            "-v",
+            "index",
+            h.source.to_str().unwrap(),
+            "--include-hidden",
+        ])
+        .assert()
+        .success();
+
+    let status = status_json(&h);
+    assert_eq!(
+        status["total_files"].as_u64().unwrap(),
+        2,
+        "hidden opt-in indexes the dotfile and the note, not the pem: {status}"
+    );
+    let json = query_json(&h, "DOTFILE_TOKEN");
+    assert!(
+        !json.to_string().contains("SECRETPEM_TOKEN") && !json.to_string().contains("server.pem"),
+        "include-hidden must not disable the secret denylist: {json}"
+    );
+}
+
+#[test]
+fn hidden_index_root_keeps_visible_children() {
+    let root = TempDir::new().expect("tempdir");
+    let source = root.path().join(".notes");
+    let data_dir = root.path().join("data");
+    let config_dir = root.path().join("config");
+    fs::create_dir_all(&source).unwrap();
+    fs::create_dir_all(&data_dir).unwrap();
+    fs::create_dir_all(&config_dir).unwrap();
+    let config_path = config_dir.join("config.toml");
+    fs::write(&config_path, "[query]\nhybrid = false\n").unwrap();
+    fs::write(source.join("todo.md"), "HIDDENROOT_TOKEN todo").unwrap();
+    fs::create_dir_all(source.join(".obsidian")).unwrap();
+    fs::write(source.join(".obsidian").join("x.md"), "HIDDENDIR_TOKEN").unwrap();
+
+    let mut cmd = Command::cargo_bin("ragfs").expect("ragfs binary");
+    cmd.env("RAGFS_TEST_EMBEDDER", "noop")
+        .env("RAGFS_DATA_DIR", &data_dir)
+        .args(["--config", config_path.to_str().unwrap()]);
+    index_ok(&mut cmd, &source);
+
+    let mut status_cmd = Command::cargo_bin("ragfs").expect("ragfs binary");
+    let output = status_cmd
+        .env("RAGFS_TEST_EMBEDDER", "noop")
+        .env("RAGFS_DATA_DIR", &data_dir)
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "--format",
+            "json",
+            "status",
+            source.to_str().unwrap(),
+        ])
+        .output()
+        .expect("status");
+    assert!(output.status.success());
+    let status = parse_json_stdout(&output.stdout);
+    assert_eq!(
+        status["total_files"].as_u64().unwrap(),
+        1,
+        "hidden index root keeps visible children: {status}"
+    );
+}
+
+#[test]
+fn reindex_purges_newly_excluded_files_without_force() {
+    let h = Harness::new();
+    disable_hybrid(&h);
+    h.write_config(
+        r"
+        [query]
+        hybrid = false
+        [index]
+        include_hidden = true
+        include_secret_files = true
+        ",
+    );
+    h.write_source("note.md", "VISIBLE_TOKEN note");
+    // `secrets.*` is on the denylist and still text/markdown, so the first
+    // index can store a row. `*.pem` is application/x-x509-ca-cert and is
+    // not extracted even when `include_secret_files` is on.
+    h.write_source("secrets.md", "SECRETFILE_TOKEN private notes");
+    index_ok(&mut h.ragfs(), &h.source);
+    assert_eq!(status_json(&h)["total_files"].as_u64().unwrap(), 2);
+
+    h.write_config(
+        r"
+        [query]
+        hybrid = false
+        ",
+    );
+    index_ok(&mut h.ragfs(), &h.source);
+    let status = status_json(&h);
+    assert_eq!(
+        status["total_files"].as_u64().unwrap(),
+        1,
+        "purge must drop the secret without --force: {status}"
+    );
+    let json = query_json(&h, "VISIBLE_TOKEN");
+    assert!(
+        !json.to_string().contains("SECRETFILE_TOKEN") && !json.to_string().contains("secrets.md"),
+        "purged secret must not be searchable: {json}"
+    );
+}

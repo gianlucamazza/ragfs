@@ -17,7 +17,7 @@
 
 use directories::ProjectDirs;
 use ragfs_core::{ChunkConfig, EmbeddingConfig as CoreEmbeddingConfig};
-use ragfs_index::IndexerConfig;
+use ragfs_index::{IndexerConfig, default_exclude_patterns};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use thiserror::Error;
@@ -131,6 +131,13 @@ impl Config {
     /// `force` comes from the CLI (`ragfs index --force`) and skips the
     /// content-hash short-circuit so every eligible file is reindexed.
     pub fn to_indexer_config(&self, force: bool) -> IndexerConfig {
+        self.to_indexer_config_with(force, false)
+    }
+
+    /// Convert this config into an [`IndexerConfig`].
+    ///
+    /// `include_hidden` is OR-ed with `[index].include_hidden` (CLI `--include-hidden`).
+    pub fn to_indexer_config_with(&self, force: bool, include_hidden: bool) -> IndexerConfig {
         IndexerConfig {
             chunk_config: self.chunk_config(),
             embed_config: self.core_embedding_config(),
@@ -139,6 +146,10 @@ impl Config {
             debounce_ms: self.index.debounce_ms,
             max_file_size: self.index.max_file_size,
             force,
+            include_hidden: include_hidden || self.index.include_hidden,
+            include_secret_files: self.index.include_secret_files,
+            honor_gitignore: self.index.honor_gitignore,
+            purge_excluded: self.index.purge_excluded,
         }
     }
 
@@ -222,6 +233,24 @@ pub struct IndexConfig {
     /// Debounce duration for file watcher (ms)
     #[serde(default = "default_debounce_ms")]
     pub debounce_ms: u64,
+
+    /// Index hidden files and directories under the root. Does not disable the
+    /// secret-file denylist.
+    #[serde(default)]
+    pub include_hidden: bool,
+
+    /// Index files that match the built-in secret denylist.
+    #[serde(default)]
+    pub include_secret_files: bool,
+
+    /// Honour `.gitignore` / `.ignore` under the index root only (no parents,
+    /// no global gitignore).
+    #[serde(default = "default_true")]
+    pub honor_gitignore: bool,
+
+    /// Delete store rows whose paths are now excluded, on every `ragfs index`.
+    #[serde(default = "default_true")]
+    pub purge_excluded: bool,
 }
 
 fn default_include() -> Vec<String> {
@@ -229,16 +258,11 @@ fn default_include() -> Vec<String> {
 }
 
 fn default_exclude() -> Vec<String> {
-    vec![
-        "**/node_modules/**".to_string(),
-        "**/.git/**".to_string(),
-        "**/target/**".to_string(),
-        "**/__pycache__/**".to_string(),
-        "**/*.pyc".to_string(),
-        "**/.venv/**".to_string(),
-        "**/venv/**".to_string(),
-        "**/.env".to_string(),
-    ]
+    default_exclude_patterns()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_max_file_size() -> u64 {
@@ -256,6 +280,10 @@ impl Default for IndexConfig {
             exclude: default_exclude(),
             max_file_size: default_max_file_size(),
             debounce_ms: default_debounce_ms(),
+            include_hidden: false,
+            include_secret_files: false,
+            honor_gitignore: true,
+            purge_excluded: true,
         }
     }
 }
@@ -579,15 +607,26 @@ mod tests {
     #[test]
     fn default_indexer_mapping_uses_config_excludes() {
         let indexer = Config::default().to_indexer_config(false);
+        let library = ragfs_index::IndexerConfig::default();
         assert!(!indexer.force);
         assert_eq!(indexer.max_file_size, default_max_file_size());
         assert_eq!(indexer.debounce_ms, default_debounce_ms());
-        assert!(
-            indexer
-                .exclude_patterns
-                .contains(&"**/node_modules/**".to_string())
-        );
+        assert_eq!(indexer.exclude_patterns, library.exclude_patterns);
+        assert_eq!(indexer.include_hidden, library.include_hidden);
+        assert_eq!(indexer.include_secret_files, library.include_secret_files);
+        assert_eq!(indexer.honor_gitignore, library.honor_gitignore);
+        assert_eq!(indexer.purge_excluded, library.purge_excluded);
         assert!(indexer.include_patterns.contains(&"**/*".to_string()));
+        assert!(!indexer.include_hidden);
+        assert!(indexer.honor_gitignore);
+        assert!(indexer.purge_excluded);
+    }
+
+    #[test]
+    fn include_hidden_cli_flag_does_not_disable_secrets() {
+        let indexer = Config::default().to_indexer_config_with(false, true);
+        assert!(indexer.include_hidden);
+        assert!(!indexer.include_secret_files);
     }
 
     #[test]

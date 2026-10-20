@@ -93,11 +93,33 @@ Options controlling which files are indexed.
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `include` | string[] | `["**/*"]` | Glob patterns for files to include |
-| `exclude` | string[] | (see below) | Glob patterns for files to exclude |
+| `exclude` | string[] | (see below) | Extra ignore globs (noise / build artifacts). Replacing this list does **not** disable hidden-path or secret-file rules. |
 | `max_file_size` | int | `52428800` (50MB) | Maximum file size to index (bytes) |
 | `debounce_ms` | int | `500` | Debounce for file watcher (milliseconds) |
+| `include_hidden` | bool | `false` | Index hidden files and directories under the root (`--include-hidden`). Does **not** disable the secret denylist. |
+| `include_secret_files` | bool | `false` | Index files that match the built-in secret-file denylist. |
+| `honor_gitignore` | bool | `true` | Honour `.gitignore` / `.ignore` under the index root only (no parent walk, no global gitignore). |
+| `purge_excluded` | bool | `true` | Every `ragfs index` (and mount initial scan) deletes store rows whose paths are now excluded. |
 
-**Default exclude patterns:**
+CLI, `ragfs mount`, the library `IndexerConfig`, and these docs share one default list (`ragfs_index::exclude`). MCP does not walk the tree; it searches the index the CLI wrote.
+
+**Hidden paths.** Any path component *under the index root* that starts with `.` is excluded. The index root itself may be hidden (`~/.notes`); only descendants are filtered. Use `--include-hidden` / `include_hidden = true` to opt in. That flag does not disable the secret denylist.
+
+**Secret-file denylist** (always on unless `include_secret_files = true`). gitleaks / TruffleHog-style filename patterns, case-sensitive on Linux and case-insensitive on macOS/Windows:
+
+```text
+**/.env  **/.env.*  **/*.env
+**/.netrc  **/.npmrc  **/.pypirc  **/.git-credentials
+**/*.key  **/*.pem  **/*.p12  **/*.pfx  **/*.kdbx
+**/*.jks  **/*.keystore  **/*.ppk
+**/id_rsa  **/id_dsa  **/id_ecdsa  **/id_ed25519
+**/secrets.*  **/credentials.*
+**/.aws/credentials  **/.kube/config
+```
+
+Public keys (`id_*.pub`) are not secrets. A bare `id_*` is not used (false positive on `id_mapping.md`). Gitignore `!` rules cannot re-include a secret or hidden path.
+
+**Default `exclude` patterns** (noise only; secrets and hidden paths are separate):
 ```toml
 exclude = [
     "**/node_modules/**",
@@ -107,7 +129,7 @@ exclude = [
     "**/*.pyc",
     "**/.venv/**",
     "**/venv/**",
-    "**/.env"
+    "**/*.lock"
 ]
 ```
 
@@ -123,14 +145,19 @@ exclude = [
     "**/*.pyc",
     "**/.venv/**",
     "**/venv/**",
-    "**/.env",
+    "**/*.lock",
     "**/dist/**",
-    "**/build/**",
-    "**/*.lock"
+    "**/build/**"
 ]
+include_hidden = false
+include_secret_files = false
+honor_gitignore = true
+purge_excluded = true
 max_file_size = 10485760  # 10MB
 debounce_ms = 1000
 ```
+
+Python directory loaders (Haystack / LangChain / LlamaIndex adapters) are caller-owned: they do not walk with this matcher. Apply the same defaults if they ingest a tree.
 
 ---
 
