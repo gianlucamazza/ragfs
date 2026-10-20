@@ -353,6 +353,7 @@ fn setup_logging(verbose: bool) -> Result<()> {
     let level = if verbose { Level::DEBUG } else { Level::INFO };
     let subscriber = FmtSubscriber::builder()
         .with_max_level(level)
+        .with_writer(std::io::stderr)
         .with_target(false)
         .finish();
     tracing::subscriber::set_global_default(subscriber).context("Failed to set tracing subscriber")

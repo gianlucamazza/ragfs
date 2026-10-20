@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from ragfs_bench.adapters import BM25, RagfsCLI
-from ragfs_bench.runner import prepare_models
+from ragfs_bench.runner import prepare_models, read_fact, write_fact
 
 
 class AdapterTests(unittest.TestCase):
@@ -56,3 +56,12 @@ class AdapterTests(unittest.TestCase):
                 self.assertIsNone(cli.command('ragfs', 'index', str(root)))
                 args = run.call_args.args[0]
                 self.assertLess(args.index('--format'), args.index('index'))
+
+    def test_answers_read_actual_frontmatter(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            record = {'fact_id': 'f1', 'revision_id': 'r1', 'value': 'quoted: text', 'source': {'uri': 'fixture://r1'}}
+            write_fact(root, record)
+            self.assertEqual(read_fact(root, 'r1'), record)
+            with self.assertRaisesRegex(ValueError, 'escapes'):
+                read_fact(root, '../outside')

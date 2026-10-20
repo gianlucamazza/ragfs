@@ -11,3 +11,16 @@ hybrid = true
 
 [judge]
 enabled = false
+
+[adapters.bm25]
+implementation = "ragfs_bench.adapters.BM25"
+version = 1
+k1 = 1.5
+b = 0.75
+chunking = "exported RagFS index chunks"
+
+[adapters.vector]
+model = "thenlper/gte-small"
+dimension = 384
+metric = "cosine"
+hybrid = false

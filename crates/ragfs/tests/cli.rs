@@ -230,10 +230,7 @@ fn query_json(h: &Harness, query: &str) -> serde_json::Value {
 
 fn parse_json_stdout(stdout: &[u8]) -> serde_json::Value {
     let text = String::from_utf8_lossy(stdout);
-    let start = text
-        .find('{')
-        .unwrap_or_else(|| panic!("no JSON object in stdout: {text}"));
-    serde_json::from_str(&text[start..]).unwrap_or_else(|e| panic!("query JSON: {e}: {text}"))
+    serde_json::from_str(&text).unwrap_or_else(|e| panic!("query JSON: {e}: {text}"))
 }
 
 #[test]

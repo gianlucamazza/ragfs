@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .adapters import BM25, RagfsCLI
 from .facts import answer, validate_facts
-from .metrics import fact_match, recall
+from .metrics import fact_match, lexical, recall
 from .protocol import digest
 
 
@@ -46,6 +46,21 @@ def write_fact(root: Path, record: dict):
                     f"{record['fact_id']}: {record['value']}\n")
 
 
+def read_fact(root: Path, revision_id: str) -> dict:
+    path = root / (revision_id + '.md')
+    if path.resolve().parent != root.resolve():
+        raise ValueError('Fact revision escapes corpus')
+    body = path.read_text()
+    if not body.startswith('---\n'):
+        raise ValueError('Retrieved fact has no front matter')
+    front, _ = body[4:].split('\n---\n', 1)
+    record = {key: json.loads(value) for key, value in
+              (line.split(': ', 1) for line in front.splitlines())}
+    if record['revision_id'] != revision_id:
+        raise ValueError('Retrieved fact revision differs from file name')
+    return record
+
+
 def run(protocol_path, protocol, pins, facts, queries, *, binary, snapshot, model_manifest, output):
     if protocol["query"].get("hybrid") is not True:
         raise ValueError("This frozen protocol requires hybrid=true for ragfs; vector is always dense-only")
@@ -77,8 +92,11 @@ def run(protocol_path, protocol, pins, facts, queries, *, binary, snapshot, mode
                         ids, receipt = bm25.retrieve(query['text'], protocol['query']['k']), None
                     else:
                         ids, receipt = cli.retrieve(system, query, protocol['query']['k'])
-                    retrieved = [lookup[rid] for rid in dict.fromkeys(ids) if rid in lookup]
-                    prediction = answer(retrieved, query, lookup)
+                    retrieved = [read_fact(root, rid) for rid in dict.fromkeys(ids) if rid in lookup]
+                    # Only explicit predecessor links may perform direct corpus lookup.
+                    predecessors = {record['supersedes']: read_fact(root, record['supersedes'])
+                                    for record in retrieved if record['supersedes'] is not None}
+                    prediction = answer(retrieved, query, predecessors)
                     latency = time.perf_counter() - started
                     retrieval = recall(ids, query['gold_ids'], protocol['query']['k'])
                     case = {'id': query['id'], 'system': system, 'ability': query['ability'],
@@ -86,6 +104,11 @@ def run(protocol_path, protocol, pins, facts, queries, *, binary, snapshot, mode
                             'latency_s': latency, 'cost_usd': 0,
                             'exact_match_strict': fact_match(prediction, gold),
                             'exact_match_lenient': fact_match(prediction, gold, lenient=True),
+                            'lexical_fields': {field: {
+                                mode: dict(zip(('em', 'f1'), lexical(prediction[field], gold[field], lenient=mode == 'lenient')))
+                                for mode in ('strict', 'lenient')
+                            } for field in ('current', 'replaced')},
+                            'source_exact': prediction['source'] == gold['source'],
                             'recall': retrieval, 'index_revision': revision,
                             'fingerprint': {k: receipt.get(k) for k in ('embedding_model','embedding_dim','min_alnum_chars')} if receipt else None}
                     raw = output / 'raw' / system / (query['id'] + '.json')
