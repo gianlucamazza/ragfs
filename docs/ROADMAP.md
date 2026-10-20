@@ -10,14 +10,14 @@ This document was created because no `docs/ROADMAP.md` existed on `main`
 It does not assign calendar dates. Size figures are rough order-of-magnitude
 only (not measurements).
 
-**Baseline (facts from the tree, not estimates):**
+**Implementation baseline (updated 2026-10-20):**
 
-- Workspace version: `0.2.2` (`Cargo.toml` `[workspace.package]`).
-- Default CLI features: `candle` + `lancedb`. `full` adds `vision`.
-  `crates/ragfs` always depends on `ragfs-fuse` and `fuser` today.
+- Workspace version: `0.3.0` (`Cargo.toml` `[workspace.package]`).
+- Default CLI features: `candle` + `lancedb` + `mount`. `full` adds `vision`.
+  `ragfs-fuse` and `fuser` are optional through the default-on `mount` feature.
 - LanceDB pin: `lancedb = "0.37.1"` (workspace `Cargo.toml`; 0.38.0 skipped on
-  purpose). The `ignore` crate is not a dependency yet.
-- There is no `docs/community-forks.md` yet.
+  purpose). The shared exclusion matcher uses the `ignore` crate.
+- `docs/community-forks.md` records adapted and deferred fork ideas.
 
 Tracked on the [milestones](https://github.com/gianlucamazza/ragfs/milestones) page.
 
@@ -61,16 +61,16 @@ Mark these done so the plan does not re-open them.
 | ADR-010 Accepted (design only) | Done (ADR PR) | `#175` / `e310209c` |
 | ADR-011 Accepted (design only) | Done (phase 0) | `#177` / `0ef60e0b` |
 
-Out of this plan: open `chore: release v0.2.3` (`#176`, release-plz). ADR-010
-says the exclusion/integrity sequence is **0.3.0**, not 0.2.3. Do not fold
-ADR-010 PRs into that bot PR.
+The generated 0.2.3 PR #176 is closed as superseded. Release preparation is
+#208 for **0.3.0**, following the breaking ADR-010 changes.
 
 ---
 
 ## Milestone `0.3.0`
 
-**ADR-010: Index Exclusion, Secret Handling, and Store Integrity.** One PR per
-item. Security first. Target release **0.3.0**. Content-level secret scanning
+**ADR-010: Index Exclusion, Secret Handling, and Store Integrity.** Security first.
+#206 implements PR 1; #207 consolidates the remaining bounded integrity tasks
+with separate acceptance tests and issue links; #208 contains only release edits. Target release **0.3.0**. Content-level secret scanning
 and `$RAGFS_CONFIG_DIR/ignore` stay deferred (see [Deferred](#deferred-accepted-as-out-of-sequence)).
 
 Where fork code is adapted, the implementing PR uses trailer
@@ -82,7 +82,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 
 | Field | Value |
 |-------|--------|
-| Status | **In progress** (another agent; no public PR on the repo at plan writing) |
+| Status | Done — #206, `9bc1bfd` |
 | Issue | (#179) |
 | Size | L (~800–1500 LOC, mostly matcher + CLI/MCP/FUSE tests) |
 | Gate | CoS merge |
@@ -139,7 +139,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 
 | Field | Value |
 |-------|--------|
-| Status | Not started |
+| Status | Implemented in #207; CI/merge gate |
 | Issue | (#180) |
 | Size | M (~250–500 LOC) |
 | Gate | CoS merge |
@@ -165,7 +165,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 
 | Field | Value |
 |-------|--------|
-| Status | Not started |
+| Status | Implemented in #207; CI/merge gate |
 | Issue | (#181) |
 | Size | M (~200–400 LOC) |
 | Gate | CoS merge |
@@ -200,7 +200,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 
 | Field | Value |
 |-------|--------|
-| Status | Not started |
+| Status | Implemented in #207; CI/merge gate |
 | Issue | (#182) |
 | Size | S (~150–300 LOC) |
 | Gate | CoS merge |
@@ -224,7 +224,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 
 | Field | Value |
 |-------|--------|
-| Status | Not started |
+| Status | Implemented in #207; CI/merge gate |
 | Issue | (#183) |
 | Size | S (~50–150 LOC) |
 | Gate | CoS merge |
@@ -246,7 +246,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 
 | Field | Value |
 |-------|--------|
-| Status | Not started |
+| Status | Implemented in #207; CI/merge gate |
 | Issue | (#184) |
 | Size | S (~100–250 LOC); M (~+100–300) only if the test fails and FTS must be refreshed |
 | Gate | CoS merge |
@@ -271,7 +271,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 
 | Field | Value |
 |-------|--------|
-| Status | Not started |
+| Status | Implemented in #207; CI/merge gate |
 | Issue | (#185) |
 | Size | M (~200–400 LOC, mostly Cargo + CI + CLI error path) |
 | Gate | CoS merge |
@@ -295,7 +295,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 
 | Field | Value |
 |-------|--------|
-| Status | Not started |
+| Status | Draft release #208 |
 | Issue | (#186) |
 | Size | S (CHANGELOG + version bump across workspace / Python packages; follow the 0.2.2 release-prep pattern) |
 | Gate | **Gianluca** |
@@ -889,7 +889,7 @@ same exclude defaults if they ingest a tree (ADR-010). Not a ragfs CLI PR.
 
 ```mermaid
 flowchart TD
-  p1["adr010-pr1 excludes + denylist + purge<br/>IN PROGRESS"] --> p2["adr010-pr2 nested .ragfsignore"]
+  p1["adr010-pr1 excludes + denylist + purge<br/>DONE (#206)"] --> p2["adr010-pr2 nested .ragfsignore"]
   p1 --> p3["adr010-pr3 model fingerprint"]
   p1 --> p4["adr010-pr4 min_alnum_chars"]
   p1 --> p5["adr010-pr5 log unreadable entries"]
@@ -920,8 +920,7 @@ flowchart TD
 
 **0.3.0 (blocking everything that changes the corpus or opens a new modality):**
 
-1. **adr010-pr1** (in progress) is on the critical path. Nothing else in 0.3.0
-   should merge first: it owns the shared matcher, hidden+secret defaults, and
+1. **adr010-pr1** landed in #206. It was first on the critical path: it owns the shared matcher, hidden+secret defaults, and
    purge.
 2. **adr010-pr2** needs that matcher.
 3. **adr010-pr3** is the fail-closed fingerprint later multimodal and
@@ -985,11 +984,11 @@ stays `gte-small`.
 
 ## Completion execution — 2026-10-20
 
-- #206: exclusion corrections published; complete CI validation in progress.
+- #206: merged as `9bc1bfd`; required CI and Python tests passed.
 - #207: implementation for #180–#185, including nested ignore, model fingerprint,
   Unicode chunk floor, traversal diagnostics, FTS regression and optional mount.
   Status: implemented, awaiting full CI and merge. Merge #206 first.
-- #186: 0.3.0 release follows both PRs; never publish these changes as 0.2.3.
+- #186 / #208: draft 0.3.0 release follows both PRs; never publish these changes as 0.2.3.
 - #176: superseded for this sequence by the 0.3.0 release preparation.
 - ADR-011 and ADR-009 remain subsequent work with the dependencies above. No
   benchmark measurements or multimodal completion are claimed by these PRs.

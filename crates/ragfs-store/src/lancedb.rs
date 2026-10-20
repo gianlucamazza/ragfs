@@ -106,6 +106,9 @@ impl LanceStore {
             .execute()
             .await
             .map_err(|e| StoreError::Init(e.to_string()))?;
+        let mut sidecar = self.sidecar_with_revision(SchemaSidecar::default(), revision);
+        sidecar.rebuild_in_progress = true;
+        self.write_schema_sidecar(&sidecar).await?;
         for name in [CHUNKS_TABLE, FILES_TABLE] {
             if tables.iter().any(|table| table == name) {
                 conn.drop_table(name, &[])
@@ -115,9 +118,9 @@ impl LanceStore {
         }
         *self.chunks_table.write().await = None;
         *self.files_table.write().await = None;
-        let sidecar = self.sidecar_with_revision(SchemaSidecar::default(), revision);
-        self.write_schema_sidecar(&sidecar).await?;
-        self.init().await
+        self.initialize_tables().await?;
+        sidecar.rebuild_in_progress = false;
+        self.write_schema_sidecar(&sidecar).await
     }
 
     async fn ensure_model_matches(&self) -> Result<(), StoreError> {
@@ -137,6 +140,11 @@ impl LanceStore {
             }
         };
         if let Some(sidecar) = sidecar {
+            if sidecar.rebuild_in_progress {
+                return Err(StoreError::Schema(
+                    "Index rebuild was interrupted; run ragfs index <path> --force".into(),
+                ));
+            }
             if let (Some(stored), Some(requested)) = (
                 sidecar.embedding_model.as_deref(),
                 self.embedding_model.as_deref(),
@@ -155,6 +163,75 @@ impl LanceStore {
                 )));
             }
         }
+        Ok(())
+    }
+
+    async fn initialize_tables(&self) -> Result<(), StoreError> {
+        info!("Initializing LanceDB at {:?}", self.db_path);
+
+        // Ensure directory exists
+        if let Some(parent) = self.db_path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| StoreError::Init(format!("Failed to create db directory: {e}")))?;
+        }
+
+        let conn = self.get_connection().await?;
+
+        // Check existing tables
+        let tables = conn
+            .table_names()
+            .execute()
+            .await
+            .map_err(|e| StoreError::Init(format!("Failed to list tables: {e}")))?;
+
+        if tables.contains(&CHUNKS_TABLE.to_string()) {
+            self.ensure_chunks_schema_v2().await?;
+        } else {
+            info!("Creating chunks table");
+            let schema = Arc::new(self.chunks_schema());
+            conn.create_empty_table(CHUNKS_TABLE, schema)
+                .execute()
+                .await
+                .map_err(|e| StoreError::Init(format!("Failed to create chunks table: {e}")))?;
+
+            // Create FTS index on content column for hybrid search
+            info!("Creating FTS index on content column");
+            let table = conn
+                .open_table(CHUNKS_TABLE)
+                .execute()
+                .await
+                .map_err(|e| StoreError::Init(format!("Failed to open chunks table: {e}")))?;
+
+            if let Err(e) = table
+                .create_index(&["content"], Index::FTS(FtsIndexBuilder::default()))
+                .execute()
+                .await
+            {
+                warn!("Failed to create FTS index (may already exist): {e}");
+            }
+
+            self.ensure_index_revision().await?;
+        }
+
+        // Create files table if not exists
+        if !tables.contains(&FILES_TABLE.to_string()) {
+            info!("Creating files table");
+            let schema = Arc::new(self.files_schema());
+            conn.create_empty_table(FILES_TABLE, schema)
+                .execute()
+                .await
+                .map_err(|e| StoreError::Init(format!("Failed to create files table: {e}")))?;
+        }
+
+        // Existing tables may already have enough rows for ANN.
+        if let Err(e) = self.ensure_vector_index().await {
+            warn!("ANN index check on init failed: {e}");
+        }
+
+        self.ensure_index_revision().await?;
+
+        info!("LanceDB initialized successfully");
         Ok(())
     }
 
@@ -891,73 +968,8 @@ impl LanceStore {
 #[async_trait]
 impl VectorStore for LanceStore {
     async fn init(&self) -> Result<(), StoreError> {
-        info!("Initializing LanceDB at {:?}", self.db_path);
         self.ensure_model_matches().await?;
-
-        // Ensure directory exists
-        if let Some(parent) = self.db_path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| StoreError::Init(format!("Failed to create db directory: {e}")))?;
-        }
-
-        let conn = self.get_connection().await?;
-
-        // Check existing tables
-        let tables = conn
-            .table_names()
-            .execute()
-            .await
-            .map_err(|e| StoreError::Init(format!("Failed to list tables: {e}")))?;
-
-        if tables.contains(&CHUNKS_TABLE.to_string()) {
-            self.ensure_chunks_schema_v2().await?;
-        } else {
-            info!("Creating chunks table");
-            let schema = Arc::new(self.chunks_schema());
-            conn.create_empty_table(CHUNKS_TABLE, schema)
-                .execute()
-                .await
-                .map_err(|e| StoreError::Init(format!("Failed to create chunks table: {e}")))?;
-
-            // Create FTS index on content column for hybrid search
-            info!("Creating FTS index on content column");
-            let table = conn
-                .open_table(CHUNKS_TABLE)
-                .execute()
-                .await
-                .map_err(|e| StoreError::Init(format!("Failed to open chunks table: {e}")))?;
-
-            if let Err(e) = table
-                .create_index(&["content"], Index::FTS(FtsIndexBuilder::default()))
-                .execute()
-                .await
-            {
-                warn!("Failed to create FTS index (may already exist): {e}");
-            }
-
-            self.ensure_index_revision().await?;
-        }
-
-        // Create files table if not exists
-        if !tables.contains(&FILES_TABLE.to_string()) {
-            info!("Creating files table");
-            let schema = Arc::new(self.files_schema());
-            conn.create_empty_table(FILES_TABLE, schema)
-                .execute()
-                .await
-                .map_err(|e| StoreError::Init(format!("Failed to create files table: {e}")))?;
-        }
-
-        // Existing tables may already have enough rows for ANN.
-        if let Err(e) = self.ensure_vector_index().await {
-            warn!("ANN index check on init failed: {e}");
-        }
-
-        self.ensure_index_revision().await?;
-
-        info!("LanceDB initialized successfully");
-        Ok(())
+        self.initialize_tables().await
     }
 
     async fn upsert_chunks(&self, chunks: &[Chunk]) -> Result<(), StoreError> {
@@ -3393,5 +3405,32 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+    }
+    #[tokio::test]
+    async fn interrupted_rebuild_refuses_open_until_retried() {
+        let temp = tempdir().unwrap();
+        let store = LanceStore::new(temp.path().join("test.lance"), TEST_DIM)
+            .with_embedding_model("model-a");
+        store.init().await.unwrap();
+        let mut metadata = store.read_schema_sidecar().await.unwrap();
+        metadata.rebuild_in_progress = true;
+        store.write_schema_sidecar(&metadata).await.unwrap();
+        assert!(
+            store
+                .init()
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("--force")
+        );
+        store.rebuild().await.unwrap();
+        assert!(
+            !store
+                .read_schema_sidecar()
+                .await
+                .unwrap()
+                .rebuild_in_progress
+        );
+        store.init().await.unwrap();
     }
 }

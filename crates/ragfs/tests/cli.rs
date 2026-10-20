@@ -708,7 +708,8 @@ fn chunk_floor_filters_before_embedding_and_is_recorded() {
     h.write_source("punctuation.md", "--- #   ");
     h.write_source("cjk.md", "中文啊");
     index_ok(&mut h.ragfs(), &h.source);
-    let output = query_json(&h, "中文");
+    assert_eq!(status_json(&h)["total_files"], 1);
+    let output = query_json(&h, "中文啊");
     assert_eq!(output["min_alnum_chars"], 3);
     assert!(!output.to_string().contains("punctuation.md"));
     assert!(output.to_string().contains("cjk.md"));

@@ -514,3 +514,7 @@ cargo build -p ragfs --no-default-features --features candle,lancedb
 ```
 
 Such a binary reports `built without mount` for the mount command.
+
+If a table rebuild is interrupted, `rebuild_in_progress` in the sidecar keeps
+subsequent opens blocked. Repeat `ragfs index <path> --force` to recover; an
+incomplete rebuild is never treated as a valid empty index.

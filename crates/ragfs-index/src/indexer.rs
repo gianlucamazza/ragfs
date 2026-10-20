@@ -101,7 +101,12 @@ impl IndexerConfig {
     /// Prefer [`Self::should_process_path_in`] so a hidden index root is kept.
     #[must_use]
     pub fn should_process_path(&self, path: &Path) -> bool {
-        self.should_process_path_in(path, Path::new("/"))
+        let root = if path.is_absolute() {
+            Path::new("/")
+        } else {
+            Path::new("")
+        };
+        self.should_process_path_in(path, root)
     }
 
     /// Whether `path` is eligible under `root`.
@@ -292,8 +297,11 @@ impl IndexerService {
 
         info!("Starting indexer for {:?}", self.root);
 
-        // Initialize store
-        self.store.init().await.map_err(Error::Store)?;
+        // A failed open must remain retryable, not look like a running service.
+        if let Err(error) = self.store.init().await {
+            *self.running.write().await = false;
+            return Err(Error::Store(error));
+        }
 
         // Purge before starting background work; failure must not report a
         // successful upgrade while excluded content remains searchable.
@@ -818,7 +826,7 @@ async fn process_file(
 }
 
 /// Unicode general categories L* and Nd; unlike `is_alphanumeric`, this
-/// deliberately excludes Letter_Number and Other_Number (e.g. fractions).
+/// deliberately excludes `Letter_Number` and `Other_Number` (e.g. fractions).
 fn chunk_has_content(text: &str, minimum: usize) -> bool {
     use unicode_general_category::{GeneralCategory, get_general_category};
     text.chars()
@@ -2040,5 +2048,11 @@ mod tests {
         assert!(chunk_has_content("中文啊", 3));
         assert!(chunk_has_content("a١２", 3));
         assert!(chunk_has_content("", 0));
+    }
+    #[test]
+    fn rootless_config_filter_accepts_relative_visible_paths() {
+        let config = IndexerConfig::default();
+        assert!(config.should_process_path(Path::new("notes/keyboard.md")));
+        assert!(!config.should_process_path(Path::new("notes/server.pem")));
     }
 }

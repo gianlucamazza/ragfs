@@ -838,8 +838,14 @@ async fn run(cli: Cli) -> Result<()> {
                 .context("Failed to get data directory")?
                 .join("models");
             // try_new does not download weights; dimension() is the SoT.
-            let embedder = CandleEmbedder::try_new(cache_dir, model, false)
-                .context("Failed to create embedder")?;
+            let embedder: Box<dyn Embedder> = if use_test_noop_embedder() {
+                Box::new(NoopEmbedder::new())
+            } else {
+                Box::new(
+                    CandleEmbedder::try_new(cache_dir, model, false)
+                        .context("Failed to create embedder")?,
+                )
+            };
             let store = LanceStore::new(db_path, embedder.dimension())
                 .with_embedding_model(embedder.model_name());
             store.init().await.context("Failed to initialize store")?;
