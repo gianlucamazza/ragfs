@@ -177,21 +177,21 @@ impl ExclusionMatcher {
     #[must_use]
     pub fn collect_files(&self) -> Vec<PathBuf> {
         let mut builder = WalkBuilder::new(&self.root);
+        let matcher = self.clone();
         builder
             .standard_filters(false)
-            .hidden(!self.options.include_hidden)
-            .git_ignore(self.options.honor_gitignore)
-            .git_global(false)
-            .git_exclude(self.options.honor_gitignore)
-            .ignore(self.options.honor_gitignore)
-            .parents(false)
-            .require_git(false)
             .follow_links(false)
-            .overrides(self.overrides.clone());
+            .filter_entry(move |entry| entry.depth() == 0 || !matcher.is_excluded(entry.path()));
 
         builder
             .build()
-            .filter_map(Result::ok)
+            .filter_map(|entry| match entry {
+                Ok(entry) => Some(entry),
+                Err(error) => {
+                    warn!("Cannot read index entry: {error}");
+                    None
+                }
+            })
             .filter(|entry| entry.file_type().is_some_and(|kind| kind.is_file()))
             .map(ignore::DirEntry::into_path)
             .filter(|path| matches_include(&self.options.include_patterns, path))
@@ -205,6 +205,9 @@ impl ExclusionMatcher {
 
 fn build_overrides(root: &Path, options: &ExclusionOptions) -> Override {
     let mut builder = OverrideBuilder::new(root);
+    builder
+        .case_insensitive(cfg!(any(target_os = "macos", target_os = "windows")))
+        .expect("case policy configured before adding globs");
     if !options.include_secret_files {
         for pattern in DEFAULT_SECRET_PATTERNS {
             add_ignore_override(&mut builder, pattern);
@@ -288,48 +291,55 @@ fn matches_include(include_patterns: &[String], path: &Path) -> bool {
 /// undo [`ExclusionMatcher::is_excluded`] secret/hidden decisions because
 /// those run first.
 fn gitignore_excludes(root: &Path, path: &Path) -> bool {
-    let mut dirs = Vec::new();
-    let mut current = if path.is_dir() {
-        path.to_path_buf()
-    } else {
-        path.parent().unwrap_or(path).to_path_buf()
+    let Ok(relative) = path.strip_prefix(root) else {
+        return true;
     };
-
-    loop {
-        dirs.push(current.clone());
-        if current == root {
-            break;
-        }
-        match current.parent() {
-            Some(parent) if parent == root || parent.starts_with(root) => {
-                current = parent.to_path_buf();
+    let mut candidate = root.to_path_buf();
+    let components: Vec<_> = relative.components().collect();
+    // An ignored parent cannot be resurrected by a child negation. Evaluate
+    // each ancestor as a directory, even for a deleted watcher path.
+    for (index, component) in components.iter().enumerate() {
+        candidate.push(component.as_os_str());
+        let is_dir = index + 1 < components.len() || path.is_dir();
+        let mut dirs = Vec::new();
+        let mut parent = candidate.parent();
+        while let Some(dir) = parent {
+            if !dir.starts_with(root) {
+                break;
             }
-            _ => break,
+            dirs.push(dir);
+            if dir == root {
+                break;
+            }
+            parent = dir.parent();
         }
-    }
-    dirs.reverse();
-
-    let is_dir = path.is_dir();
-    let mut ignored = false;
-    for dir in &dirs {
+        dirs.reverse();
+        let mut ignored = false;
+        // File kind takes precedence over depth; the nearest file of the
+        // same kind wins. All evaluation stays inside the index root.
         for name in [".gitignore", ".ignore"] {
-            let ignore_path = dir.join(name);
-            if !ignore_path.is_file() {
-                continue;
-            }
-            let (gitignore, error) = Gitignore::new(&ignore_path);
-            if let Some(error) = error {
-                warn!("Failed to parse {}: {error}", ignore_path.display());
-            }
-            let matched = gitignore.matched(path, is_dir);
-            if matched.is_ignore() {
-                ignored = true;
-            } else if matched.is_whitelist() {
-                ignored = false;
+            for dir in &dirs {
+                let ignore_path = dir.join(name);
+                if !ignore_path.is_file() {
+                    continue;
+                }
+                let (rules, error) = Gitignore::new(&ignore_path);
+                if let Some(error) = error {
+                    warn!("Failed to parse {}: {error}", ignore_path.display());
+                }
+                let matched = rules.matched(&candidate, is_dir);
+                if matched.is_ignore() {
+                    ignored = true;
+                } else if matched.is_whitelist() {
+                    ignored = false;
+                }
             }
         }
+        if ignored {
+            return true;
+        }
     }
-    ignored
+    false
 }
 
 #[cfg(test)]
@@ -596,5 +606,39 @@ mod tests {
         let collected = matcher.collect_files();
         assert_eq!(collected.len(), 1);
         assert!(collected[0].ends_with("lib.rs"));
+    }
+    #[test]
+    fn scan_and_direct_match_agree_for_ignored_ancestors() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        write(root, ".gitignore", "private/\n");
+        write(root, "private/.gitignore", "!note.md\n");
+        write(root, "private/note.md", "private");
+        write(root, "public.md", "public");
+        let matcher = matcher_at(root);
+        assert!(matcher.is_excluded(&root.join("private/note.md")));
+        assert_eq!(matcher.collect_files(), vec![root.join("public.md")]);
+    }
+
+    #[test]
+    fn ignore_kind_precedence_beats_nested_gitignore() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        write(root, ".ignore", "*.md\n");
+        write(root, "sub/.gitignore", "!note.md\n");
+        write(root, "sub/note.md", "private");
+        let matcher = matcher_at(root);
+        assert!(matcher.is_excluded(&root.join("sub/note.md")));
+        assert!(matcher.collect_files().is_empty());
+    }
+
+    #[test]
+    fn secret_case_policy_is_explicit() {
+        let tmp = tempdir().unwrap();
+        let matcher = matcher_at(tmp.path());
+        assert_eq!(
+            matcher.is_excluded(&tmp.path().join("SERVER.PEM")),
+            cfg!(any(target_os = "macos", target_os = "windows"))
+        );
     }
 }

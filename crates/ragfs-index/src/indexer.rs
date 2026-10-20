@@ -292,6 +292,13 @@ impl IndexerService {
         // Initialize store
         self.store.init().await.map_err(Error::Store)?;
 
+        // Purge before starting background work; failure must not report a
+        // successful upgrade while excluded content remains searchable.
+        if let Err(error) = self.purge_excluded_files().await {
+            *self.running.write().await = false;
+            return Err(error);
+        }
+
         // Start file watcher (debounce from config). Same matcher as the scan.
         let watcher = FileWatcher::with_filter(
             self.event_tx.clone(),
@@ -427,8 +434,6 @@ impl IndexerService {
             }
         });
 
-        self.purge_excluded_files().await?;
-
         // Initial scan
         self.scan().await?;
 
@@ -447,13 +452,13 @@ impl IndexerService {
                 continue;
             }
             info!("Purging excluded path {:?}", file.path);
-            if let Err(error) = self.store.delete_by_file_path(&file.path).await {
-                warn!("Failed to purge excluded {:?}: {}", file.path, error);
-            } else {
-                let _ = self.update_tx.send(IndexUpdate::FileRemoved {
-                    path: file.path.clone(),
-                });
-            }
+            self.store
+                .delete_by_file_path(&file.path)
+                .await
+                .map_err(Error::Store)?;
+            let _ = self.update_tx.send(IndexUpdate::FileRemoved {
+                path: file.path.clone(),
+            });
         }
         Ok(())
     }
@@ -665,7 +670,10 @@ async fn process_file(
     if !config.should_process_path_in(path, root) {
         debug!("Skipping {:?} (include/exclude patterns)", path);
         if config.purge_excluded {
-            let _ = store.delete_by_file_path(path).await;
+            store
+                .delete_by_file_path(path)
+                .await
+                .map_err(Error::Store)?;
         }
         return Ok(0);
     }
@@ -677,7 +685,10 @@ async fn process_file(
             metadata.len(),
             config.max_file_size
         );
-        let _ = store.delete_by_file_path(path).await;
+        store
+            .delete_by_file_path(path)
+            .await
+            .map_err(Error::Store)?;
         return Ok(0);
     }
 
@@ -760,7 +771,10 @@ async fn process_file(
     let chunk_count = chunks.len() as u32;
 
     // Delete old chunks for this file
-    let _ = store.delete_by_file_path(path).await;
+    store
+        .delete_by_file_path(path)
+        .await
+        .map_err(Error::Store)?;
 
     // Store chunks
     store.upsert_chunks(&chunks).await.map_err(Error::Store)?;
@@ -1033,6 +1047,7 @@ mod tests {
     // ==================== Mock VectorStore ====================
 
     struct MockStore {
+        fail_delete: bool,
         chunks: Arc<RwLock<Vec<Chunk>>>,
         files: Arc<RwLock<HashMap<PathBuf, FileRecord>>>,
     }
@@ -1040,6 +1055,7 @@ mod tests {
     impl MockStore {
         fn new() -> Self {
             Self {
+                fail_delete: false,
                 chunks: Arc::new(RwLock::new(Vec::new())),
                 files: Arc::new(RwLock::new(HashMap::new())),
             }
@@ -1075,6 +1091,9 @@ mod tests {
         }
 
         async fn delete_by_file_path(&self, path: &Path) -> std::result::Result<u64, StoreError> {
+            if self.fail_delete {
+                return Err(StoreError::Init("injected delete failure".into()));
+            }
             let mut chunks = self.chunks.write().await;
             let initial_len = chunks.len();
             chunks.retain(|c| c.file_path != path);
@@ -1963,5 +1982,19 @@ mod tests {
         assert_eq!(files.len(), 1, "hidden root keeps visible children");
         assert!(files[0].path.ends_with("todo.md"));
         indexer.stop().await.unwrap();
+    }
+    #[tokio::test]
+    async fn failed_purge_aborts_start_before_watching() {
+        let temp = tempdir().unwrap();
+        let store = Arc::new(MockStore {
+            fail_delete: true,
+            ..MockStore::new()
+        });
+        seed_file(&store, &temp.path().join("secrets.md"), "private").await;
+        let indexer = create_test_indexer(store.clone(), temp.path());
+        assert!(indexer.start().await.is_err());
+        assert!(!*indexer.running.read().await);
+        assert!(indexer.watcher.read().await.is_none());
+        assert_eq!(store.get_all_files().await.unwrap().len(), 1);
     }
 }
