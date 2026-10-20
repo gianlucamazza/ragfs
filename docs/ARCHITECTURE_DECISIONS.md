@@ -15,6 +15,7 @@ This document captures key architectural decisions made in RAGFS and the rationa
 - [ADR-009: Transparent Memory Benchmark Harness](#adr-009-transparent-memory-benchmark-harness)
 - [ADR-010: Index Exclusion, Secret Handling, and Store Integrity](#adr-010-index-exclusion-secret-handling-and-store-integrity) (Accepted)
 - [ADR-011: Multimodal Indexing (Images, Audio, Video)](#adr-011-multimodal-indexing-images-audio-video) (Accepted)
+- [ADR-012: Native Block-Device Filesystem vs Semantic Volume](adr/012-native-filesystem-vs-semantic-volume.md) (Proposed, HOLD)
 
 ---
 
@@ -2302,6 +2303,28 @@ Table 1 scores; OpenVLHarness +9.7–12.6 tool-use deltas;
 Twelve Labs / Marqo / vendor latency pages.
 
 
+## ADR-012: Native Block-Device Filesystem vs Semantic Volume
+
+### Status
+Proposed (HOLD) — owner decision required. Full text:
+[`docs/adr/012-native-filesystem-vs-semantic-volume.md`](adr/012-native-filesystem-vs-semantic-volume.md).
+
+This record is design only. It does not implement code, change
+Cargo or Python packages, update `docs/ROADMAP.md`, or create
+issues. Do not schedule it against 0.3.0 (ADR-010, #179–#186).
+
+### Decision (proposed)
+Reject a native block-device filesystem (`mkfs.ragfs`, superblock,
+`mount -t ragfs`, kernel driver). Keep documents canonical on the
+host FS and embeddings derived in LanceDB (current FUSE
+architecture). A later, smallest-scope **volume** (versioned
+manifest + `ragfs volume init|check|repair|upgrade`) is optional
+and only after 0.3.0 if the owner asks. Schema v3 (#188) stays
+the Lance column bump; a volume `upgrade` would wrap it, not
+replace it.
+
+---
+
 ## Summary
 
 | Decision | Key Driver |
@@ -2317,6 +2340,7 @@ Twelve Labs / Marqo / vendor latency pages.
 | Transparent memory benchmark harness (Accepted) | Protocol, pins, and dual scoring before any published number |
 | Index exclusion, secret denylist, model fingerprint (Accepted) | Default-deny hidden/secret paths; fail-closed model mix |
 | Multimodal indexing (Accepted) | Text-first captions/OCR/ASR; separate table for native CLIP/SigLIP; default-off flags |
+| Native block FS vs semantic volume (Proposed, HOLD) | Stay a layer over the host FS + LanceDB; reject `mkfs.ragfs` / kernel driver. Optional volume manifest only after 0.3.0 if the owner asks. See [ADR-012](adr/012-native-filesystem-vs-semantic-volume.md). |
 
 These decisions collectively create a system that is:
 - **Private**: All processing local
