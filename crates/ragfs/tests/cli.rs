@@ -729,8 +729,9 @@ fn image_metadata_is_searchable_without_vision() {
         3, 1, 1, 0, 201, 254, 146, 239, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
     ];
     fs::write(h.source.join("lighthouse.png"), png).unwrap();
-    index_ok(&mut h.ragfs(), &h.source);
+    index_ok(h.ragfs().env("RAGFS_TEST_EMBEDDER", "unit"), &h.source);
     h.ragfs()
+        .env("RAGFS_TEST_EMBEDDER", "unit")
         .args([
             "--format",
             "json",
