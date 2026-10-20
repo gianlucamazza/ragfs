@@ -14,7 +14,7 @@ This document captures key architectural decisions made in RAGFS and the rationa
 - [ADR-008: Index Revision Sidecar and Local Query Receipts](#adr-008-index-revision-sidecar-and-local-query-receipts)
 - [ADR-009: Transparent Memory Benchmark Harness](#adr-009-transparent-memory-benchmark-harness)
 - [ADR-010: Index Exclusion, Secret Handling, and Store Integrity](#adr-010-index-exclusion-secret-handling-and-store-integrity) (Accepted)
-- [ADR-011: Multimodal Indexing (Images, Audio, Video)](#adr-011-multimodal-indexing-images-audio-video) (Proposed)
+- [ADR-011: Multimodal Indexing (Images, Audio, Video)](#adr-011-multimodal-indexing-images-audio-video) (Accepted)
 
 ---
 
@@ -1490,7 +1490,7 @@ Social posts are not sources.
 ## ADR-011: Multimodal Indexing (Images, Audio, Video)
 
 ### Status
-Proposed
+Accepted (2026-10-20)
 
 ### Context
 ragfs is a local-first filesystem RAG. Text, code, PDF text, and Office
@@ -2316,7 +2316,7 @@ Twelve Labs / Marqo / vendor latency pages.
 | Sidecar index revision + opt-in receipts | Backward-compatible audit of retrieval |
 | Transparent memory benchmark harness (Accepted) | Protocol, pins, and dual scoring before any published number |
 | Index exclusion, secret denylist, model fingerprint (Accepted) | Default-deny hidden/secret paths; fail-closed model mix |
-| Multimodal indexing (Proposed) | Text-first captions/OCR/ASR; separate table for native CLIP/SigLIP; default-off flags |
+| Multimodal indexing (Accepted) | Text-first captions/OCR/ASR; separate table for native CLIP/SigLIP; default-off flags |
 
 These decisions collectively create a system that is:
 - **Private**: All processing local
