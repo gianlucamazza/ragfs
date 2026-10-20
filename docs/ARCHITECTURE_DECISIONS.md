@@ -13,6 +13,7 @@ This document captures key architectural decisions made in RAGFS and the rationa
 - [ADR-007: Async-First Design with Tokio](#adr-007-async-first-design-with-tokio)
 - [ADR-008: Index Revision Sidecar and Local Query Receipts](#adr-008-index-revision-sidecar-and-local-query-receipts)
 - [ADR-009: Transparent Memory Benchmark Harness](#adr-009-transparent-memory-benchmark-harness)
+- [ADR-010: Index Exclusion, Secret Handling, and Store Integrity](#adr-010-index-exclusion-secret-handling-and-store-integrity)
 
 ---
 
@@ -1009,6 +1010,479 @@ Social posts are not sources.
 
 ---
 
+## ADR-010: Index Exclusion, Secret Handling, and Store Integrity
+
+### Status
+Proposed (2026-10-20). Design only. No implementation PR until the owner
+accepts this ADR (status → Accepted).
+
+### Context
+A read-only review of the community forks
+[sophie4869/ragfs](https://github.com/sophie4869/ragfs) and
+[manojtummala/SemPOSIX](https://github.com/manojtummala/SemPOSIX) against
+`gianlucamazza/ragfs` `main` @ `bcb1611` (v0.2.2) found that the default
+index walk can ingest secret files, that two exclude lists disagree, and
+that the store records an embedding model id without comparing it on
+open. SemPOSIX scoped search is already on `main` (#60); this ADR does
+not re-port that work. The fork is a source of *ideas*, not a patch to
+apply wholesale. The design below starts from current `main`, prior art,
+and a threat model, then sequences small PRs.
+
+This ADR does not implement code, change defaults, or publish an
+advisory. It does not invent benchmark or performance numbers.
+
+#### Verified on `main` @ `bcb1611`
+
+**Two disagreeing default exclude lists.** The CLI / FUSE / documented
+config path uses `crates/ragfs/src/config.rs` `default_exclude()`
+(lines 231–241): `**/node_modules/**`, `**/.git/**`, `**/target/**`,
+`**/__pycache__/**`, `**/*.pyc`, `**/.venv/**`, `**/venv/**`, `**/.env`.
+There is **no** `**/.*`. `Config::to_indexer_config` copies
+`self.index.exclude` into `IndexerConfig` (`config.rs` 133–142). Both
+`ragfs index` and `ragfs mount` call that converter (`main.rs` 475,
+589). `docs/CONFIGURATION.md` (lines 100–112) documents this weaker
+list.
+
+`IndexerConfig::default()` (`crates/ragfs-index/src/indexer.rs` 48–66)
+is a different list: `**/.*`, `**/.git/**`, `**/node_modules/**`,
+`**/target/**`, `**/__pycache__/**`, `**/*.lock`.
+`docs/USER_GUIDE.md` (lines 137–145) documents *this* list. Library
+callers that do not go through `Config` get the stronger list; the
+product CLI does not.
+
+**`**/.*` matches hidden basenames only.**
+`path_matches_pattern` special-cases `**/.*` and `.*` to the last path
+component (`indexer.rs` 107–112). The unit test
+`test_path_matches_exclude_and_include_patterns` asserts that
+`/tmp/.tmpABC/file.txt` is *not* excluded (`indexer.rs` 1514–1517).
+Consequence:
+
+- `ragfs index ~` (CLI list, no `**/.*`): `.ssh/id_rsa`,
+  `.aws/credentials`, `.netrc`, `.npmrc`, `.obsidian/*` are eligible.
+- `IndexerConfig::default()`: a *child* hidden directory such as
+  `proj/.ssh` is skipped in `scan_directory` because its own basename
+  matches; but a hidden *index root* (for example `~/.notes`) is not
+  itself filtered by `visit_dir`, so `~/.notes/todo.md` and
+  `~/.ssh/id_rsa` (if that directory is the root) are indexed.
+- The watcher (`crates/ragfs-index/src/watcher.rs` 106–111) drops
+  events whose *basename* starts with `.`, independently of exclude
+  lists. `.aws/credentials` still generates events.
+
+**Secrets become searchable.** Chunks store file text. `ragfs query`
+returns `ResultItem.content` (`crates/ragfs/src/receipt.rs` 15–21).
+FUSE `.query/<text>` returns truncated content
+(`crates/ragfs-fuse/src/filesystem/mod.rs` 297–300). MCP
+`ragfs_search` returns `page_content[:500]`
+(`crates/ragfs-mcp/src/ragfs_mcp/server.py` 887–889). MCP does not
+walk the tree; it opens the Lance index the CLI wrote
+(`docs/MCP.md`). The on-disk index under
+`~/.local/share/ragfs/indices/` is plaintext.
+
+**No secret-file denylist beyond `**/.env`.** No `.ragfsignore`.
+Reindex does not purge newly excluded paths (`process_file` returns
+early without `delete_by_file_path` when `should_process_path` is
+false; `indexer.rs` 671–674). Oversized files *are* deleted
+(`indexer.rs` 676–684).
+
+**Embedding model is recorded, not compared.**
+`SchemaSidecar.embedding_model` is written when missing
+(`crates/ragfs-store/src/schema.rs` 26–28;
+`lancedb.rs` `sidecar_with_revision` 369–371). `init` compares
+**dimension only** (`ensure_embedding_dim_matches`, `lancedb.rs`
+103–111, called from `ensure_chunks_schema_v2` 508). There is a dim
+mismatch test (`lancedb.rs` 1903–1921) and no model-id mismatch test.
+Two 384-d models therefore mix silently. ADR-009 pins and ADR-008
+receipts already name `embedding_model` as a string; a mixed index
+makes those pins meaningless.
+
+**FTS is created once on an empty table.** `LanceStore::init` builds
+the FTS index when the chunks table is first created (`lancedb.rs`
+838–852). `upsert_chunks_inner` refreshes the **ANN** index only
+(453–455). Whether Lance hybrid search sees rows inserted after that
+empty FTS create is **unverified** on `main`. Hybrid is on by default
+(`config.rs` `default_hybrid` / `[query].hybrid`).
+
+**Unreadable directory entries are dropped.** `scan_directory` uses
+`entries.flatten()` (`indexer.rs` 604). A failed `read_dir` on the
+directory itself is warned (596–600); a failed *entry* is silent.
+
+**No chunk quality floor.** `ChunkConfig` (`crates/ragfs-core/src/types.rs`
+362–385) has size/overlap/hierarchy only. Frontmatter fences and lone
+headers can be embedded.
+
+**FUSE is a hard CLI dependency.** `crates/ragfs/Cargo.toml` always
+depends on `ragfs-fuse` and `fuser` (lines 47, 64). Default features
+are `candle` + `lancedb` (23). A CLI-only build still needs FUSE
+headers. ADR-004 keeps FUSE as the advanced interface; it does not
+require it at compile time on every host.
+
+**No `docs/adr/` directory.** ADRs live in this file. The TOC above
+is the index. There is no `docs/community-forks.md` yet.
+
+### Decision
+Adopt one shared, configurable exclusion and integrity model for CLI,
+FUSE, MCP, and library callers. Implement it only after this ADR is
+accepted, in the sequenced PRs below. Defaults are portable (no
+host-specific paths). Users can opt in to hidden or secret files.
+
+### 1. Ignore / exclusion model
+
+#### Prior art (cited)
+
+| Source | Hidden default | Ignore files | Bound | Notes |
+|--------|----------------|--------------|-------|-------|
+| ripgrep / Rust [`ignore`](https://docs.rs/ignore/latest/ignore/) [`WalkBuilder`](https://docs.rs/ignore/latest/ignore/struct.WalkBuilder.html) | Hidden skipped (`hidden()` on) | `.ignore` > `.gitignore` > `.git/info/exclude` > global gitignore; `add_custom_ignore_filename` is highest | `parents()` reads ancestors; git rules are repo-scoped | Overrides win first. Standard filters are on by default. |
+| [`gitignore`](https://git-scm.com/docs/gitignore) / [`git check-ignore`](https://git-scm.com/docs/git-check-ignore) | N/A (git tracks hidden files) | Nested `.gitignore`; repo root; `core.excludesFile` | Stops at the repository, not `/` | `!` negation cannot re-include a file under an excluded directory. |
+| [Sourcegraph ignore](https://sourcegraph.com/docs/admin/search) / [zoekt](https://github.com/sourcegraph/zoekt) | Not a hidden-dot default | Repo-root `.sourcegraph/ignore` globs, commit-tied | Repository root | zoekt-index also skips `.git,.hg,.svn` via `--ignore_dirs`. |
+| [Cursor `.cursorignore`](https://cursor.com/docs/reference/ignore-file) | `.env`, `.git/`, lockfiles ignored by default; [respects `.gitignore`](https://cursor.com/help/customization/ignore-files) | Project-root `.cursorignore`; optional hierarchical parent search | Project / opt-in parents | Agent/Tab/@ only; terminal and MCP can still read ignored files. |
+| [Continue `ignore.ts`](https://github.com/continuedev/continue/blob/main/core/indexing/ignore.ts) | Security denylist always on | `.continueignore` | Project | `id_rsa` / `*.pem` / `.aws/` / `.ssh/` plus many secret dirs. |
+| [Aider `.aiderignore`](https://aider.chat/docs/faq.html) | Uses gitignore | `.aiderignore` at **git root** ([`--aiderignore`](https://aider.chat/docs/config/options.html)) | Git root, not `/` | Same syntax as gitignore. |
+| [LlamaIndex `SimpleDirectoryReader`](https://developers.llamaindex.ai/python/framework-api-reference/readers/simple_directory_reader/) | `exclude_hidden=True` | `exclude` globs | Input directory | Hidden off by default. |
+| [LangChain `DirectoryLoader`](https://reference.langchain.com/python/langchain-community/document_loaders/directory/DirectoryLoader) | `glob="**/[!.]*"`, `load_hidden=False` | `exclude` globs | Input directory | Hidden off by default. |
+| [Gitleaks default config](https://github.com/gitleaks/gitleaks/blob/master/config/gitleaks.toml) | Content rules + path allowlists | N/A (scanner) | Repo | Filename blocking is a common overlay (see also [caulking denylist](https://github.com/cloud-gov/caulking): `*.pem`, `id_rsa`, `.env`, `.netrc`, `.aws/credentials`). |
+| [TruffleHog](https://github.com/trufflesecurity/trufflehog/blob/master/README.md) | Pattern + Shannon entropy on base64/hex blobs | Path include/exclude regex files | Configured paths | Content scan, not a walker default. |
+
+Consensus: **exclude hidden paths by default**, keep a **secret-file
+denylist**, use **gitignore syntax** for user ignore files, and **do
+not walk to `/`**. Cursor, Continue, and Aider add a named ignore file
+*on top of* gitignore. LlamaIndex and LangChain loaders exclude hidden
+files when they walk a directory.
+
+#### Decision (exclusion)
+
+1. **One source of truth.** A single Rust module (name fixed at
+   implementation; illustrative `ragfs_index::exclude`) owns the
+   default pattern lists and the matcher. `IndexerConfig::default()`,
+   `config.rs` `default_exclude()`, FUSE mount indexing, and
+   `docs/CONFIGURATION.md` / `docs/USER_GUIDE.md` all consume that
+   module. MCP does not walk files; it must be tested against the
+   same index. Python directory loaders are caller-owned; document
+   that they should apply the same defaults if they ingest a tree.
+
+2. **Use the `ignore` crate** (`WalkBuilder` +
+   `add_custom_ignore_filename(".ragfsignore")` + `OverrideBuilder`
+   for built-in defaults). Do not extend the hand-rolled glob in
+   `path_matches_pattern` except as a compatibility shim during
+   migration. This is the modern matcher (gitignore semantics, `!`
+   negation, directory trailing `/`). Licence: MIT / Unlicense, same
+   as the fork's `globset` choice.
+
+3. **Hidden files *and* hidden directories are excluded by default.**
+   Match any path *component under the index root* that starts with
+   `.`. The index root itself may be hidden (`~/.notes`); do not
+   exclude the root, only descendants. This replaces the basename-only
+   `**/.*` special case and the CLI list that omitted it. The watcher
+   uses the same matcher (drop the basename-only shortcut).
+
+4. **Secret-file denylist** (always applied unless the user sets
+   `index.include_secret_files = true`). Patterns are
+   case-insensitive on macOS/Windows and case-sensitive on Linux
+   (documented). Built-in list, not host-specific:
+
+   - `**/.env`, `**/.env.*`, `**/*.env`
+   - `**/.netrc`, `**/.npmrc`, `**/.pypirc`, `**/.git-credentials`
+   - `**/*.key`, `**/*.pem`, `**/*.p12`, `**/*.pfx`, `**/*.kdbx`
+   - `**/*.jks`, `**/*.keystore`, `**/*.ppk`
+   - `**/id_rsa`, `**/id_dsa`, `**/id_ecdsa`, `**/id_ed25519` (and
+     the same names with a `.pub` *not* excluded — public keys are
+     not secrets; keep `id_*.pub` eligible)
+   - `**/secrets.*`, `**/credentials.*`
+   - `**/.aws/credentials`, `**/.kube/config`
+
+   Do **not** use a bare `id_*` (false positive on `id_mapping.md`).
+   Users may add or subtract via config / `.ragfsignore`.
+
+5. **`.ragfsignore`.** gitignore syntax. Nested files **inside the
+   index tree** are honoured (same rationale as nested `.gitignore`:
+   a subproject can tighten rules). **Never walk above the index
+   root** looking for `.ragfsignore` — the fork's walk to `/` is
+   rejected (surprising `/` or `$HOME` files, host-specific, and
+   unlike git which stops at the repo). Optional user overlay:
+   `$RAGFS_CONFIG_DIR/ignore` (default `~/.config/ragfs/ignore`),
+   documented, not discovered by walking ancestors.
+
+6. **`.gitignore` / `.ignore`.** Honour them *under the index root*
+   when `index.honor_gitignore = true` (default **true**, matching
+   ripgrep and Cursor). Set `WalkBuilder::parents(false)` so a
+   `.gitignore` in `/` or `$HOME` is not applied. Global gitignore
+   (`git_global`) is **off** by default (host-specific). Users who
+   index a git worktree subdirectory and want the repo-root
+   `.gitignore` can set `index.honor_gitignore_parents = true`
+   (still capped: stop at the first `.git`, never at `/`).
+
+7. **Explicit opt-in for hidden paths.** `index.include_hidden`
+   (default `false`) and CLI `--include-hidden`. Hidden opt-in does
+   **not** disable the secret denylist. Secret opt-in is a separate
+   flag. Config / CLI can still exclude via `.ragfsignore`.
+
+8. **Precedence.** Built-in **secret** and **hidden** rules are
+   fail-closed: `.gitignore` / `.ignore` / `.ragfsignore` may add
+   excludes, but they must **not** re-include a secret or hidden path
+   unless the matching opt-in flag is set. (A repo that commits
+   `!.env` for git must not become searchable.) Implementation:
+   secret + hidden (and the noise list) are `OverrideBuilder` ignore
+   globs, which the `ignore` crate documents as winning first
+   ([WalkBuilder ignore rules](https://docs.rs/ignore/latest/ignore/struct.WalkBuilder.html)).
+   Then, among ignore files, custom `.ragfsignore` > `.ignore` >
+   `.gitignore`. `$RAGFS_CONFIG_DIR/ignore` is an extra ignore file
+   scoped to the user config dir, not an ancestor walk. CLI
+   `--include-hidden` / `include_secret_files` disable the matching
+   override; `--exclude` and `[index].exclude` always add excludes.
+
+9. **Purge on reindex.** Every `ragfs index` / mount initial scan
+   (not only `--force`) deletes store rows whose `file_path` is now
+   excluded. Reuse `delete_by_file_path`. Upgrading without a purge
+   would leave leaked chunks searchable. `--force` still means
+   “rewrite eligible files”; purge of ineligible files is
+   independent and default-on (`index.purge_excluded = true`).
+
+### 2. Content-level secret scanning
+
+**Options.** (a) Skip the whole file on a hit. (b) Redact the matching
+span and embed the rest. (c) Defer / opt-in.
+
+**Trade-offs.** Skip is simple and safest, but drops surrounding
+prose (README with an example key). Redact keeps the document but
+needs a stable redaction token so embeddings do not encode the
+secret; it is more code and still fails closed only if the detector
+fires. Both have **false positives**: UUIDs, checksums, base64
+images, documented example tokens. TruffleHog's entropy rule (high
+Shannon entropy on base64/hex blobs longer than 20 characters) is
+the usual extra signal and the usual FP source.
+
+**Cost.** Per-file CPU on the extract path. **No measured figure is
+claimed here**; treat any later number as `TBD (to be measured)`.
+
+**Recommendation: defer. Ship path exclusion first.** Add
+`index.secret_scan = "off" | "skip" | "redact"` (default **`off`**)
+in the config schema so a later PR can implement skip without a
+second config ADR. Do not turn scanning on by default until a
+dedicated PR has fixtures (known keys vs example keys) and an owner
+decision on skip vs redact. Path denylist plus hidden exclusion
+covers the high-value files named in the review
+(`.ssh/id_rsa`, `.aws/credentials`, `.netrc`, `.npmrc`).
+
+### 3. Store integrity (model / dimension)
+
+On `LanceStore::init` / open, if the sidecar has `embedding_model`,
+compare it to the resolved model id (`SUPPORTED_EMBEDDING_MODEL` /
+`resolve_supported_model`). On mismatch: **error**, message names
+both ids and says to rerun `ragfs index --force` (or set
+`index.on_model_mismatch = "reindex"`). Dimension mismatch already
+errors; keep that check.
+
+**Fingerprint** stored on the sidecar (additive JSON, old sidecars
+stay readable):
+
+```text
+embedding_model      # already present
+embedding_dim        # already present
+# later, not required for the first PR:
+# embedding_weights_sha256
+```
+
+The compared fingerprint for v1 is `(model_id, dimension)`. Do not
+hash weights in the first PR (download + hash is a new I/O path).
+
+**ADR-008 receipts** already carry `embedding_model`. After this
+work they also carry `embedding_dim` (additive). A query against a
+refused store never writes a receipt.
+
+**ADR-009 pins.** That ADR says ragfs retrieval/indexing/schema do
+not change *under ADR-009*. This ADR *does* change indexing
+defaults and open-time checks. The harness adapter must record the
+sidecar fingerprint in the results `environment` / `pins` once
+those fields exist. Protocol pins stay Hub revision + `sha256` of
+model artefacts (`TBD (to be measured)` until first run). A
+mismatch on open is a failed run, not a silent mix.
+
+`--force` rebuilds the table (or deletes and recreates) and
+rewrites the sidecar. It is the documented remedy.
+
+### 4. Chunk quality floor and directory errors
+
+- `[chunking].min_alnum_chars`, default **3**. A character counts if
+  it is Unicode alphanumeric (categories L* or Nd), so CJK letters
+  count. Chunks below the floor are dropped before embed.
+- Record the value on the sidecar and, additively, on query JSON /
+  receipts as `min_alnum_chars`. ADR-009 receipts copy the field
+  when present.
+- Replace `entries.flatten()` with a `warn!` per failed entry.
+  Continue the walk. Same for other product walks that flatten
+  (FUSE passthrough listing is out of scope unless it hides index
+  errors; the indexer path is in scope).
+
+### 5. Hybrid FTS staleness test; optional FUSE feature
+
+- **Test first** (no behaviour change in that PR): insert rows after
+  `init` on an empty table, run `hybrid_search`, assert the new
+  text is found. If it fails, fix by refreshing/optimizing FTS after
+  inserts — **not** by making hybrid opt-in. Credit sophie4869 as
+  reporter in that PR body only.
+- **`mount` Cargo feature** on `ragfs` (and the `ragfs-fuse`
+  dependency). Default **on** for the published binary so ADR-004
+  stays the product default. `cargo build -p ragfs --no-default-features
+  --features candle,lancedb` must succeed without `fuser`. Mount
+  subcommands error with “built without mount”. CI: one job for that
+  no-mount build (desk build only).
+
+### 6. Threat model
+
+**Asset.** File text copied into Lance chunks and returned by query
+surfaces. Highest sensitivity: SSH keys, cloud credentials, `.env`,
+`.netrc`, npm/pypi tokens.
+
+**Attacker.** Not a remote unauthenticated party. A local process
+that can invoke `ragfs query`, read FUSE `.ragfs/.query/*` /
+`.search/*` / `.similar/*`, or call MCP `ragfs_search` /
+`ragfs_similar`. Typical cases: an MCP-connected LLM, a prompt
+injected into that LLM (“search for AWS keys”), another user on a
+shared host if `allow_other` is on (`SECURITY.md`), or anyone with
+filesystem access to `~/.local/share/ragfs/indices/`.
+
+**Channel.** Indexed secrets leak as `content` in CLI JSON, FUSE
+query JSON (500-char truncate — still enough for a key), and MCP
+search (500-char truncate). The index directory is a second copy
+of the secret after the source file.
+
+**Out of scope for this ADR.** Remote HTTP serve (see non-goals).
+MCP write-jail (already shipped, [GHSA-qfm6-39c2-927v](https://github.com/gianlucamazza/ragfs/security/advisories/GHSA-qfm6-39c2-927v)).
+Physical disk encryption of `~/.local/share/ragfs`.
+
+**Mitigations this design provides.** Default-deny hidden and
+secret *paths*; purge on upgrade; model-mismatch fail-closed;
+optional later content scan. Residual: user opt-in, secrets in
+non-hidden names (`notes/passwords.md`), and the plaintext index
+directory.
+
+### 7. Migration, semver, advisory
+
+**Breaking.** Default corpus shrinks; existing indexes keep leaked
+chunks until the next index run (purge). Model mismatch becomes an
+error. Optional FUSE is a packaging change only if someone builds
+`--no-default-features` without noticing. Receipts/sidecar gain
+additive fields.
+
+**Semver recommendation: `0.3.0`.** v0.2.2 already shipped several
+MCP `BREAKING` notes inside 0.2.x. This change alters *what is in
+the index* for every `ragfs index` user, including `$HOME`. A minor
+bump is the 0.x signal for that. A `0.2.3` with `!` is acceptable
+if the owner wants the advisory out on the 0.2 line; justify that
+as “security fix only, no feature train.” CHANGELOG: `Security`
+section plus a `!` conventional-commit title on PR 1
+(`fix(index)!: …`). Keep a Changelog / SemVer as today.
+
+**Upgrade notes (docs, not this PR):** re-run `ragfs index <path>`
+once per index after upgrade (purge runs without `--force`). Use
+`--include-hidden` if the tree *is* a hidden notes dir and the user
+wants dotfiles. `--force` if the embedder id changed.
+
+**Advisory.** Publish a GitHub advisory **together with the fixing
+release**, same procedure as
+[GHSA-qfm6-39c2-927v](https://github.com/gianlucamazza/ragfs/security/advisories/GHSA-qfm6-39c2-927v)
+(published 2026-10-20, severity **low**, MCP write-gate / allowlist
+/ bounds). Recommended severity for *this* issue: **moderate**
+(CWE-200 / local information disclosure of credentials via
+query/FUSE/MCP; default config; no remote unauthenticated access).
+Do not publish the advisory before PR 1 lands on a released tag.
+
+### 8. PR sequencing (after acceptance)
+
+One PR per row. Security first. Tests on every PR. Where fork code
+is adapted, commit trailer
+`Co-authored-by: sophie4869 <sophie4869@users.noreply.github.com>`
+and name the source commits in the PR body.
+
+| # | Title | Tests |
+|---|-------|-------|
+| **1** | `fix(index)!: exclude hidden paths and secret files by default` + `docs/community-forks.md` | Unit: `.ssh/id_rsa`, `.aws/credentials`, `.obsidian/x.md`, hidden index root `~/.notes` *kept*, `server.pem` excluded, `notes/keyboard.md` kept. CLI defaults == indexer defaults. Integration: temp tree, query via **CLI + MCP + FUSE** never returns those paths. Purge: pre-seeded chunk for an excluded path is gone after index. |
+| **2** | `feat(index): .ragfsignore` | Parse, comments, trailing `/`, nested under root, **no** read of a `/`-ancestor file. |
+| **3** | `fix(store): refuse a different embedding model` | Sidecar other model → error; `--force` rebuilds and rewrites sidecar; dim check still works. |
+| **4** | `fix(index): skip degenerate chunks` | `---`, `#`, whitespace dropped; short CJK kept; value in sidecar/receipt. |
+| **5** | `fix(index): log unreadable directory entries` | Unix permission-denied entry → warning, walk continues. |
+| **6** | `test(store): hybrid search sees rows inserted after FTS create` | Test first; fix only if it fails. Reporter credit in body. |
+| **7** | `build: optional mount feature` | CI no-mount build; mount subcommand message. |
+| **8** | (folded into 1) community-forks credits | Entries for sophie4869/ragfs (taken / not taken / reopen) and manojtummala/SemPOSIX (ideas in #60). |
+
+`docs/community-forks.md` is created in **PR 1**, not in this ADR
+PR. Later, only on owner request and behind their own ADRs: Metal
+opt-in, `ragfs compact`, HTTP `serve` with auth on by default.
+
+### Non-goals
+
+- Switching the default embedding model to e5 / multilingual-e5
+  (would break ADR-009 pins and every existing index).
+- Putting absolute paths (or last-N folder names) into embedding
+  text (host leakage; retrieval change).
+- `ragfs serve` web UI as in the fork (optional token, `CORS *`, no
+  Host check).
+- Synology / rsync helpers.
+- Docker image publishing (see `examples/docker-rag-stack`).
+- Implementing any of the PRs above in *this* change.
+
+### Rationale
+Path exclusion is the control that actually stops
+`.ssh/id_rsa` from becoming a search hit. A single `ignore`-crate
+matcher, bounded at the index root, is what ripgrep, Cursor, and
+git already taught users. Content scanning and a web UI are larger
+surfaces; they wait. Comparing the sidecar model id is the missing
+half of the dim check and is what makes ADR-008/009 pins honest.
+`--force` is already the CLI hammer.
+
+### Trade-offs
+
+**Pros.** One list; hidden dirs covered; leaked chunks purged;
+fail-closed model mix; portable defaults; FUSE optional for
+CLI-only hosts.
+
+**Cons.** Users who indexed `~/.notes` *as a hidden tree of
+dotfiles* must pass `--include-hidden`. Honouring `.gitignore` by
+default may drop files a docs tree still wanted (opt out with
+`honor_gitignore = false`). Deferred content scan will not catch
+`notes/passwords.md`.
+
+### Alternatives considered
+
+| Alternative | Rejected because |
+|-------------|------------------|
+| Port sophie4869/ragfs matcher and ignore-to-`/` | Custom glob; ancestor walk to `/`; two lists would remain unless rewritten anyway |
+| Keep `path_matches_pattern` and only add `**/.*` to the CLI list | Still basename-only; hidden-root vs hidden-child stays wrong; no gitignore semantics |
+| Hidden files only (not directories) | `.ssh/id_rsa` is the bug |
+| Content scan on by default | FP + skip/redact product choice; no fixtures yet |
+| Auto-reindex on model mismatch (fork marker file) | Surprising CPU/disk; `--force` is explicit |
+| Make hybrid opt-in to hide FTS staleness | Hides the bug; hybrid is the documented default |
+| 0.2.3 without an advisory | Default credential indexing deserves a coordinated advisory |
+| Implement in this PR | Owner has not accepted the design |
+
+### Open questions (owner)
+
+1. Release: **0.3.0** (recommended) or **0.2.3** with `!`?
+2. Advisory severity: **moderate** (recommended) or **low** (same
+   rung as GHSA-qfm6-39c2-927v)?
+3. Confirm `index.honor_gitignore` default **true**, with
+   `parents` off?
+4. Confirm content scan stays **off** until a later PR?
+5. Nested `.ragfsignore` under the index root (recommended) vs
+   root-only?
+6. Ship `$RAGFS_CONFIG_DIR/ignore` in PR 2, or wait?
+
+### Sources verified
+
+- This repo @ `bcb1611`: `crates/ragfs/src/config.rs`,
+  `crates/ragfs-index/src/indexer.rs`, `watcher.rs`,
+  `crates/ragfs-store/src/lancedb.rs`, `schema.rs`,
+  `crates/ragfs-fuse/src/filesystem/mod.rs`,
+  `crates/ragfs-mcp/src/ragfs_mcp/server.py`,
+  `docs/CONFIGURATION.md`, `docs/USER_GUIDE.md`, ADR-008/009 in
+  this file, [GHSA-qfm6-39c2-927v](https://github.com/gianlucamazza/ragfs/security/advisories/GHSA-qfm6-39c2-927v).
+- Fork review (read-only, 2026-10-20) of sophie4869/ragfs and
+  manojtummala/SemPOSIX; #60 on this repo.
+- Prior-art URLs in the table above.
+
+Social posts are not sources.
+
+---
+
 ## Summary
 
 | Decision | Key Driver |
@@ -1022,6 +1496,7 @@ Social posts are not sources.
 | Tokio async | Concurrency, I/O efficiency |
 | Sidecar index revision + opt-in receipts | Backward-compatible audit of retrieval |
 | Transparent memory benchmark harness (Accepted) | Protocol, pins, and dual scoring before any published number |
+| Index exclusion, secret denylist, model fingerprint (Proposed) | Default-deny hidden/secret paths; fail-closed model mix |
 
 These decisions collectively create a system that is:
 - **Private**: All processing local
