@@ -14,6 +14,7 @@ This document captures key architectural decisions made in RAGFS and the rationa
 - [ADR-008: Index Revision Sidecar and Local Query Receipts](#adr-008-index-revision-sidecar-and-local-query-receipts)
 - [ADR-009: Transparent Memory Benchmark Harness](#adr-009-transparent-memory-benchmark-harness)
 - [ADR-010: Index Exclusion, Secret Handling, and Store Integrity](#adr-010-index-exclusion-secret-handling-and-store-integrity) (Accepted)
+- [ADR-011: Multimodal Indexing (Images, Audio, Video)](#adr-011-multimodal-indexing-images-audio-video) (Proposed)
 
 ---
 
@@ -1486,6 +1487,821 @@ Social posts are not sources.
 
 ---
 
+## ADR-011: Multimodal Indexing (Images, Audio, Video)
+
+### Status
+Proposed
+
+### Context
+ragfs is a local-first filesystem RAG. Text, code, PDF text, and Office
+OOXML already go through extract → chunk → embed (`gte-small`, 384-d
+Candle) → LanceDB. Images exist in the extractor crate; audio and video
+do not. Agents that mount a tree or call MCP therefore cannot search
+screenshots, scans, voice notes, or recordings except by filename or
+the few words of metadata the image extractor writes.
+
+This ADR is design only. It does **not** implement extractors, add
+Cargo or Python dependencies, change the default embedder, bump a
+version, or cut a tag. Implementation follows in the sequenced PRs
+below, each feature-flagged and default-off. It does not invent
+benchmark, latency, or VRAM numbers. Model names, sizes, licences, and
+release dates below were fetched from the cited URLs while writing;
+anything not fetched is marked unverified.
+
+#### Sequencing relative to ADR-010 and 0.3.0
+
+Do **not** start these PRs until the ADR-010 exclusion / model-
+fingerprint sequence has landed and **0.3.0** is released, unless the
+owner later accepts a documented exception.
+
+Reasons, from the current code rather than a calendar guess:
+
+1. **Exclusion applies to media.** ADR-010 changes *what* is eligible
+   to enter the index (hidden paths, secret-file denylist,
+   `.ragfsignore`, purge of newly excluded paths). Media files are
+   large and often sit next to secrets (screenshots in `~/Downloads`,
+   voice memos under a hidden notes dir, camera rolls). Shipping a
+   working image or ASR path *before* those defaults would make more
+   of those files searchable. The existing image path already writes
+   metadata text into Lance (`process_file` embeds `content.text`);
+   widening that surface without the new walker is the wrong order.
+2. **Per-modality fingerprints need ADR-010's sidecar check.** ADR-010
+   records that `SchemaSidecar.embedding_model` is written but only
+   *dimension* is compared on open (`ensure_embedding_dim_matches`).
+   Native CLIP / SigLIP / CLAP vectors must not mix with `gte-small`
+   384-d. A fail-closed model-id check is the prerequisite; adding a
+   second embedding space before that check repeats the same class of
+   silent mix.
+3. **Size and purge semantics.** `max_file_size` is 50 MiB
+   (`crates/ragfs/src/config.rs` `default_max_file_size`, line 244).
+   ADR-010's oversized-file delete path is the right hook for a later
+   duration limit. Audio/video need that hook to exist and to be
+   tested, not a second skip list.
+4. **No concrete reason to invert the order.** The image captioner is
+   already feature-gated and, as verified below, is not wired into the
+   indexer. Completing that wire after exclusions is the smallest
+   useful step and does not require a new model.
+
+Owner may accept this ADR independently of ADR-010; the *code* PRs
+still wait.
+
+#### Verified on `main` @ `e310209c` (docs) / code as of that commit
+
+**Images are metadata-first; captions are optional and unused by the
+indexer.** `ImageExtractor` (`crates/ragfs-extract/src/image.rs`)
+accepts `image/jpeg`, `image/png`, `image/gif`, `image/webp`,
+`image/bmp`, `image/tiff`. `extract` decodes with
+`image::load_from_memory` (`decode_image_metadata`, lines 143–154)
+and builds `text` as `Image: {filename} ({w}x{h}, {format})`
+(lines 88–96). If a captioner is present *and* initialized, a caption
+is stored on `ExtractedImage.caption` (lines 99–121), **not** appended
+to `text`. The CLI registers `ImageExtractor::new()` with no
+captioner (`crates/ragfs/src/main.rs` line 293).
+
+**`vision` is default-off.** `crates/ragfs-extract/Cargo.toml` feature
+`vision` pulls Candle + `hf-hub` + `tokenizers`. `crates/ragfs/Cargo.toml`
+default features are `candle` + `lancedb`; `full` adds `vision`.
+`BlipCaptioner` (`crates/ragfs-extract/src/vision.rs`) loads
+`Salesforce/blip-image-captioning-base` at 384×384 when the feature
+is on. `PlaceholderCaptioner` always returns `None`. `docs/API.md`
+and `docs/CONFIGURATION.md` describe the feature as optional
+(~400 MB model download).
+
+**The indexer never reads `ExtractedContent.images`.**
+`process_file` (`crates/ragfs-index/src/indexer.rs` 652–793) extracts,
+skips empty `content.text`, chunks `content`, and embeds
+`chunk_outputs[].content` via `EmbedderPool::embed_batch` (text only).
+`determine_content_type` (806–869) returns `Code`, `Markdown`, or
+`Text` — never `ContentType::ImageCaption`, even though that variant
+exists (`crates/ragfs-core/src/types.rs` 232–233) and Lance already
+round-trips the string `image_caption`
+(`crates/ragfs-store/src/lancedb.rs` 1392, 1436–1448). So a built
+`--features vision` binary still indexes the metadata sentence, not
+the BLIP caption.
+
+**PDF embedded images are extracted, not captioned, not indexed as
+images.** `PdfExtractor` (`crates/ragfs-extract/src/pdf.rs`) pulls
+DCTDecode / FlateDecode / JPXDecode images with
+`MAX_IMAGES = 100`, `MAX_TOTAL_BYTES = 50 * 1024 * 1024`,
+`MIN_DIMENSION = 50` (lines 89–91). `ExtractedImage.caption` is
+hard-coded `None` with the comment "Will be filled by vision model
+in future" (line 204). Those bytes never reach `process_file`.
+
+**Audio is a type, not a pipeline.** `Modality` is `Text | Image |
+Audio` (`types.rs` 422–426). `Embedder::embed_image` defaults to
+`EmbedError::ModalityNotSupported(Modality::Image)` (`traits.rs`
+108–115). There is no `embed_audio`. Tests construct
+`Modality::Audio` and `EmbedError::ModalityNotSupported(Modality::Audio)`
+(`types.rs` 778–779; `error.rs` 183, 362) but no extractor or
+embedder implements it.
+
+**Video is `UnsupportedType`.** `ExtractorRegistry::get_for_mime("video/mp4")`
+is asserted `None` (`crates/ragfs-extract/src/registry.rs` 118).
+`ExtractError::UnsupportedType("video/mp4")` is a documented error
+string (`crates/ragfs-core/src/error.rs` 235–238). No video MIME is
+registered.
+
+**Store schema has no modality or time range.** `chunks_schema`
+(`crates/ragfs-store/src/schema.rs` 77–121) is v2: identity, content,
+byte/line ranges, hierarchy, a single `FixedSizeList` embedding,
+`embedding_model`, file MIME/size, code fields, directory-scope
+columns. No `modality`, no `start_ms` / `end_ms`. `SearchResult`
+(`types.rs` 515–530) exposes `file_path`, `content`, `score`,
+`byte_range`, `line_range`, `metadata`. FUSE `.query/<text>` emits
+those fields with content truncated to 500 characters
+(`crates/ragfs-fuse/src/filesystem/mod.rs` 297–303). MCP
+`ragfs_search` emits `file_path`, `content[:500]`, `score`,
+`metadata` (`crates/ragfs-mcp/src/ragfs_mcp/server.py` 887–891).
+Neither surface has a time code or a thumbnail.
+
+**`max_file_size` is 50 MiB for every file.** Image decode has no
+separate pixel budget. A 50 MiB PNG can still expand to a large
+bitmap inside `image::load_from_memory`.
+
+### Decision
+Adopt a **text-first, feature-flagged, separate-space** multimodal
+plan:
+
+1. **Close the existing image gap** so metadata + optional BLIP
+   captions (and later OCR) become `ContentType::ImageCaption` chunks
+   in the *current* `gte-small` table. One embedding space, ADR-009
+   pins unchanged.
+2. **Native multimodal embeddings** (CLIP / SigLIP 2, later optional
+   ColQwen) live in a **separate Lance table** with its own dimension
+   and ADR-010-style model fingerprint. Never write a 512-d or 768-d
+   vector into the 384-d chunks table.
+3. **Audio is transcript-first** (timestamped Whisper chunks in the
+   text table). Native audio embeddings (CLAP) are a later optional
+   table, not the default.
+4. **Video is last** and is a composition of keyframe images + an ASR
+   track, with `start_ms` / `end_ms` on every hit. No Twelve Labs (or
+   other cloud video API) in the product path.
+5. Every new runtime is a **default-off Cargo feature**. Prefer
+   Rust/Candle or a pinned subprocess (whisper.cpp, tesseract,
+   optional ffmpeg) over a Python service. Linked ffmpeg is out of
+   the first sequence.
+
+### 1. Images: native embeddings vs caption-then-embed vs OCR
+
+Two retrieval styles are in production use elsewhere, plus OCR as a
+text overlay.
+
+**Native dual-encoder (text and image in one space).** A text query
+is embedded with the *text* tower and compared to *image* vectors.
+This is how LlamaIndex, Haystack, Marqo, and LanceDB's Python
+`open-clip` helper search photos.
+
+| Model (fetched) | Hub / paper | Params (Hub overview unless noted) | Dim / notes | Licence |
+|-----------------|-------------|-------------------------------------|-------------|---------|
+| OpenAI CLIP ViT-B/32 | [openai/clip-vit-base-patch32](https://huggingface.co/openai/clip-vit-base-patch32); paper [arXiv:2103.00020](https://arxiv.org/abs/2103.00020) (2021-01) | Hub overview does not report a parameter count | Dual encoder; Candle has `ClipModel` ([docs.rs](https://docs.rs/candle-transformers/latest/candle_transformers/models/clip/struct.ClipModel.html), [example](https://github.com/huggingface/candle/blob/main/candle-examples/examples/clip/main.rs)) | Hub card has **no `license:` tag**. GitHub [openai/CLIP LICENSE](https://raw.githubusercontent.com/openai/CLIP/main/LICENSE) is MIT for the *software*. Weights licence is **unverified** from the Hub card. |
+| OpenCLIP ViT-B-32 `laion2b_s34b_b79k` | Used as LanceDB `open-clip` default ([docs](https://docs.lancedb.com/integrations/embedding/openclip)) | Not re-counted here | CPU default in that helper | [open_clip LICENSE](https://raw.githubusercontent.com/mlfoundations/open_clip/main/LICENSE) is MIT (software) |
+| SigLIP 2 | Paper [arXiv:2502.14786](https://arxiv.org/abs/2502.14786) (submitted 2025-02-20); [big_vision README](https://github.com/google-research/big_vision/blob/main/big_vision/configs/proj/image_text/README_siglip2.md); Hub e.g. [google/siglip2-base-patch16-224](https://huggingface.co/google/siglip2-base-patch16-224) | Paper: vision towers ViT-B **86M**, L **303M**, So400m **400M**, g **1B**. Hub reports **375.2M** for the `siglip2-base-patch16-224` dual-encoder repo (not the same number as the paper's vision-tower 86M) | Multilingual; NaFlex variants exist on the Hub (not opened in this pass beyond the paper's claim) | Hub `apache-2.0`; big_vision: software Apache-2.0, other materials CC-BY-4.0 |
+| jina-clip-v2 | [jinaai/jina-clip-v2](https://huggingface.co/jinaai/jina-clip-v2); [arXiv:2412.08802](https://arxiv.org/abs/2412.08802) | Hub **865.3M** (card: text 561M + EVA02-L 304M) | 64–1024 Matryoshka; 512×512; 89 languages | **`cc-by-nc-4.0` — non-commercial. Do not default.** |
+| jina-embeddings-v5-omni-small (reference only) | [jinaai/jina-embeddings-v5-omni-small](https://huggingface.co/jinaai/jina-embeddings-v5-omni-small); paper [arXiv:2605.08384](https://arxiv.org/abs/2605.08384). There is **no** Hub repo named `jinaai/jina-embeddings-v5-omni` (404 on fetch). Compact sibling: [jinaai/jina-embeddings-v5-omni-nano](https://huggingface.co/jinaai/jina-embeddings-v5-omni-nano). | Hub **1626.3M**. Card text says “~1.74B” (not reconciled here). | Card: **one shared space** for text, image, video, and audio; dim 1024; Matryoshka 32–1024; aligned with [jinaai/jina-embeddings-v5-text-small](https://huggingface.co/jinaai/jina-embeddings-v5-text-small). Card benchmark “open-weight frontier” figures are **vendor/paper claims**, not re-run. | **`cc-by-nc-4.0` — reference only. Do not default, do not pin.** |
+| nomic-embed-vision-v1.5 | [nomic-ai/nomic-embed-vision-v1.5](https://huggingface.co/nomic-ai/nomic-embed-vision-v1.5); [arXiv:2406.18587](https://arxiv.org/abs/2406.18587) | Hub **92.9M** | Same space as [nomic-embed-text-v1.5](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5) (Hub **136.7M**, Apache-2.0). Card reports ImageNet 0-shot **71.0** vs OpenAI CLIP ViT-B/16 **68.3** (card figures, not re-run here) | `apache-2.0` |
+
+**Visual-document retrievers (page-as-image, multi-vector).** These
+target scanned PDFs and slides, not holiday photos.
+
+| Model | Hub / paper | Notes | Licence |
+|-------|-------------|-------|---------|
+| ColPali v1.3 | [vidore/colpali-v1.3](https://huggingface.co/vidore/colpali-v1.3) (also [vidore/colpali](https://huggingface.co/vidore/colpali)); [arXiv:2407.01449](https://arxiv.org/abs/2407.01449) | ColBERT-style MaxSim. Needs a late-interaction index, not a single Lance `FixedSizeList`. **No official ONNX/GGUF** on the Hub card, tags, or file listing (safetensors adapter only). | Adapter card `mit`. **Sits on a Gemma / PaliGemma base**: `vidore/colpaligemma-3b-pt-448-base` (https://huggingface.co/vidore/colpaligemma-3b-pt-448-base) is `license:gemma`, architecture `paligemma`, `base_model:google/paligemma-3b-pt-448`. Gemma Terms: https://ai.google.dev/gemma/terms. **Do not default.** |
+| ColQwen2 | [vidore/colqwen2-v1.0](https://huggingface.co/vidore/colqwen2-v1.0), [vidore/colqwen2-base](https://huggingface.co/vidore/colqwen2-base) | Hub base **2209.2M**, architecture `qwen2_vl`, `base_model:Qwen/Qwen2-VL-2B-Instruct` | Both cards `apache-2.0`. Still a multi-vector ~2B VLM; **no official ONNX/GGUF** on the Hub card or tags. CPU latency **UNVERIFIED**. |
+| ColQwen2.5 | [vidore/colqwen2.5-v0.2](https://huggingface.co/vidore/colqwen2.5-v0.2), [vidore/colqwen2.5-base](https://huggingface.co/vidore/colqwen2.5-base) | Hub base **3754.9M**, architecture `qwen2_5_vl` | Adapter card `mit`; base card `apache-2.0`. **Treat as qwen-research**: card text and `base_model` are `Qwen/Qwen2.5-VL-3B-Instruct`. **No official ONNX/GGUF** (listing is safetensors + tokenizer only). Do not default. |
+
+**Runtime pin if a later PR ever calls ColPali from Python.**
+[colpali-engine 0.3.18](https://pypi.org/project/colpali-engine/0.3.18/)
+(PyPI upload **2026-08-22**) requires
+`transformers>=5.3.0,<6.0.0`. Under Transformers v5, **do not**
+use an older engine: `>=0.3.18` is the floor. That stack is still
+Python-only, multi-vector, and licence-gated by the base model; it
+is not a phase-1..6 default.
+
+**Caption-then-embed with a small VLM**, then the existing
+`gte-small` text embedder. This is what Haystack's
+`LLMDocumentContentExtractor` does with a vision chat model
+([docs](https://docs.haystack.deepset.ai/docs/llmdocumentcontentextractor)).
+ragfs already sketched this with BLIP.
+
+| Model | Hub / paper | Params | Licence |
+|-------|-------------|--------|---------|
+| BLIP captioning base (already in-tree) | [Salesforce/blip-image-captioning-base](https://huggingface.co/Salesforce/blip-image-captioning-base); [arXiv:2201.12086](https://arxiv.org/abs/2201.12086) | Hub overview did not print a parameter count | `bsd-3-clause` |
+| SmolVLM-256M-Instruct | [HuggingFaceTB/SmolVLM-256M-Instruct](https://huggingface.co/HuggingFaceTB/SmolVLM-256M-Instruct); [arXiv:2504.05299](https://arxiv.org/abs/2504.05299) | Hub **256.5M**; ONNX tag present | `apache-2.0` |
+| SmolVLM-500M-Instruct | [HuggingFaceTB/SmolVLM-500M-Instruct](https://huggingface.co/HuggingFaceTB/SmolVLM-500M-Instruct) | Hub **507.5M** | `apache-2.0` |
+| SmolVLM-Instruct (2B-class) | [HuggingFaceTB/SmolVLM-Instruct](https://huggingface.co/HuggingFaceTB/SmolVLM-Instruct) | Hub **2246.3M** | `apache-2.0` |
+| Florence-2-base | [microsoft/Florence-2-base](https://huggingface.co/microsoft/Florence-2-base); [arXiv:2311.06242](https://arxiv.org/abs/2311.06242) | Card **0.23B**; Hub **231.6M** | `mit` |
+| Qwen2.5-VL-3B-Instruct | [Qwen/Qwen2.5-VL-3B-Instruct](https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct) | Hub **3754.6M** | **`qwen-research` ([LICENSE](https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct/raw/main/LICENSE), 2024-09-19): non-commercial unless a separate commercial licence is obtained. Do not default.** |
+| Qwen3-VL-2B-Instruct | [Qwen/Qwen3-VL-2B-Instruct](https://huggingface.co/Qwen/Qwen3-VL-2B-Instruct) | Hub **2127.5M**; architecture `qwen3_vl` | **`apache-2.0`** (Hub card + README `license:`). Prefer this over Qwen2.5-VL-3B if a later PR wants a Qwen VLM. Card marketing (“most powerful … to date”) is a **vendor claim**, not a measured ragfs result. Still ~2B; opt-in only. |
+| Qwen3.5-0.8B (small) | [Qwen/Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B) | Hub **873.4M**; architecture `qwen3_5`; `image-text-to-text` | **`apache-2.0`** (README `license_link` to the same-repo LICENSE). Unified VL, not a dual-encoder. Candidate later captioner; not a phase-1 pin. |
+| Qwen3.5-2B (small) | [Qwen/Qwen3.5-2B](https://huggingface.co/Qwen/Qwen3.5-2B) | Hub **2274.1M**; architecture `qwen3_5`; `image-text-to-text` | **`apache-2.0`**. Same family as 0.8B; still opt-in. |
+
+**OCR.** Tesseract is [Apache-2.0](https://raw.githubusercontent.com/tesseract-ocr/tesseract/main/LICENSE).
+It is the local, licence-clean way to get *searchable words* off
+scans and screenshots. It does not replace a caption (a photo of a
+cat has no text) and it does not replace a dual-encoder (a query
+"red bicycle" will not match an OCR-empty photo). It *does* make
+`gte-small` + FTS useful on slides and screenshots. No Tesseract
+WER was measured in this pass.
+
+**Hub licence red flags (cross-checked against Hub cards).**
+Adapter-card `license:` is not enough when the base model is
+more restrictive. Do **not** default any of these.
+
+| Repo | Hub URL | Card `license` | Effective flag |
+|------|---------|----------------|----------------|
+| `jinaai/jina-clip-v2` | https://huggingface.co/jinaai/jina-clip-v2 | `cc-by-nc-4.0` | **CC-BY-NC** |
+| `jinaai/jina-embeddings-v5-omni-small` | https://huggingface.co/jinaai/jina-embeddings-v5-omni-small | `cc-by-nc-4.0` | **CC-BY-NC — reference only** (omni text/image/video/audio). Same flag on `jinaai/jina-embeddings-v5-omni-nano`. |
+| `Qwen/Qwen2.5-VL-3B-Instruct` | https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct | README `license_name: qwen-research`; [LICENSE](https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct/raw/main/LICENSE) is the Qwen Research Licence (non-commercial unless a separate commercial grant). Hub overview metadata prints no `license:` tag. | **qwen-research / NC** |
+| `vidore/colqwen2.5-v0.2` | https://huggingface.co/vidore/colqwen2.5-v0.2 | adapter card `mit` | **qwen-research** via base `Qwen/Qwen2.5-VL-3B-Instruct` (card text: “based on Qwen2.5-VL-3B-Instruct”). `vidore/colqwen2.5-base` (https://huggingface.co/vidore/colqwen2.5-base) prints `apache-2.0` **and** `base_model:Qwen/Qwen2.5-VL-3B-Instruct` (Hub **3754.9M**). Treat the stack as research-licensed. |
+| `vidore/colpali-v1.3` | https://huggingface.co/vidore/colpali-v1.3 | adapter card `mit` | **Gemma / PaliGemma**. `base_model` is `vidore/colpaligemma-3b-pt-448-base` (https://huggingface.co/vidore/colpaligemma-3b-pt-448-base, Hub `license:gemma`, **2924.6M**, architecture `paligemma`, itself `base_model:google/paligemma-3b-pt-448`). |
+| `microsoft/msclap` | https://huggingface.co/microsoft/msclap | `ms-pl` | **MS-PL**. Hub overview did **not** print a parameter count (not copied). Prefer `laion/clap-htsat-fused` if a CLAP table is added. |
+
+**ONNX / GGUF (official Hub only).** Official `vidore/colpali`,
+`vidore/colpali-v1.3`, `vidore/colqwen2-v1.0`, and
+`vidore/colqwen2.5-v0.2` Hub overviews have **no** `onnx` or
+`gguf` tags. Directory listings of
+`vidore/colpali-v1.3` and `vidore/colqwen2.5-v0.2` contain
+safetensors adapters and tokenizer files only — **no official
+ONNX or GGUF**. Community conversions were not exhaustively
+searched and stay **UNVERIFIED**. `HuggingFaceTB/SmolVLM-256M-Instruct`
+and `SmolVLM-500M-Instruct` **do** carry an `onnx` Hub tag.
+`jinaai/jina-clip-v2` and `nomic-ai/nomic-embed-vision-v1.5` also
+carry `onnx` tags (still NC / Apache as above).
+
+**Recommendation for images.** Default product path:
+**OCR (when text-like) + caption-then-embed into the existing
+384-d table.** Native SigLIP 2 (Apache-2.0, Candle-shaped future
+work) or OpenCLIP as a **second table** for "find this photo"
+queries. Reject jina-clip-v2 and **jina-embeddings-v5-omni-***
+(CC-BY-NC; omni is documentation contrast only),
+Qwen2.5-VL-3B-Instruct and **colqwen2.5** (qwen-research), and
+ColPali v1.3 (Gemma / PaliGemma base) as defaults. If a later PR
+wants a Qwen VLM captioner, prefer **Qwen3-VL-2B-Instruct** or
+**Qwen3.5-0.8B / 2B** (`apache-2.0`) over Qwen2.5-VL-3B.
+`vidore/colqwen2-v1.0`
+(https://huggingface.co/vidore/colqwen2-v1.0) prints
+`apache-2.0` on the adapter; it is still a ~2B multi-vector VLM
+with no official ONNX/GGUF — defer to a later opt-in after the
+single-vector table exists. Candle already implements CLIP and
+BLIP; SigLIP 2 in Candle is **UNVERIFIED** (do not claim a Rust
+port exists until a crate API is fetched).
+
+### 2. Audio: ASR vs audio embeddings
+
+**Local ASR (timestamped chunks).**
+
+| Stack | What was fetched | Licence / runtime | Notes |
+|-------|------------------|-------------------|-------|
+| whisper.cpp | [ggml-org/whisper.cpp README](https://raw.githubusercontent.com/ggml-org/whisper.cpp/master/README.md); latest tag **[v1.9.5](https://github.com/ggml-org/whisper.cpp/releases/tag/v1.9.5)** (published **2026-10-06**) | MIT badge on README | C/C++, CPU, Apple Silicon Metal/Core ML, no Python. README memory table: tiny 75 MiB disk / ~273 MB RAM … large 2.9 GiB / ~3.9 GB. CLI example converts input with **ffmpeg** to 16-bit WAV. Phase-5 pin should start from this tag (or newer) and be re-checked in that PR. |
+| faster-whisper | [SYSTRAN/faster-whisper README](https://raw.githubusercontent.com/SYSTRAN/faster-whisper/master/README.md) + [LICENSE](https://raw.githubusercontent.com/SYSTRAN/faster-whisper/master/LICENSE); latest tag **[v1.2.1](https://github.com/SYSTRAN/faster-whisper/releases/tag/v1.2.1)** (published **2025-10-31**; no later GitHub release on fetch) | MIT; Python 3.9+ | CTranslate2; segment `start`/`end`; optional `word_timestamps`; Silero VAD; decodes via PyAV (bundles FFmpeg libs — no system ffmpeg required, per README). MCP/Python path only; not a CLI default. |
+| distil-whisper | [distil-whisper/distil-small.en](https://huggingface.co/distil-whisper/distil-small.en); [arXiv:2311.00430](https://arxiv.org/abs/2311.00430) | `mit`; Hub **166.1M** | English-only for this checkpoint. Compatible with faster-whisper per that README. |
+| OpenAI Whisper checkpoints | [openai/whisper-tiny](https://huggingface.co/openai/whisper-tiny) (**37.8M**), [openai/whisper-small](https://huggingface.co/openai/whisper-small) (**241.7M**); [arXiv:2212.04356](https://arxiv.org/abs/2212.04356) | `apache-2.0` | Candle ships a Whisper example (`tiny.en` default, timestamps on) at [candle-examples/whisper](https://github.com/huggingface/candle/blob/main/candle-examples/examples/whisper/main.rs). |
+| NVIDIA Parakeet TDT 0.6B v2 | [nvidia/parakeet-tdt-0.6b-v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) | **`cc-by-4.0`**; card says commercial/non-commercial use | English; word-level timestamps; NeMo/Python; 0.6B. Strong quality on the card's WER table (not re-run). Heavier Python stack than whisper.cpp. |
+
+**Diarization.** [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1)
+is tagged `license:mit` **and is gated** on the Hub (accept terms +
+token). Out of the first sequence: extra auth, extra model, and
+speaker labels are not required to search a voice note.
+
+**Audio embeddings.**
+
+| Model | Hub URL | What was fetched | Licence |
+|-------|---------|------------------|---------|
+| LAION CLAP | https://huggingface.co/laion/clap-htsat-fused ([arXiv:2211.06687](https://arxiv.org/abs/2211.06687)) | Hub **153.6M**, `apache-2.0` | Prefer this if a later `audio-embed` table exists. |
+| Microsoft CLAP (msclap) | https://huggingface.co/microsoft/msclap ([arXiv:2309.05767](https://arxiv.org/abs/2309.05767)) | Card `license: ms-pl`. Hub overview printed **no** parameter count (not invented here). | **MS-PL — do not default.** |
+
+Useful for "find songs that sound like X" where ASR fails (music,
+ambience). Useless for "what did we decide on the call?" — that is
+a transcript problem. Candle CLAP support is **UNVERIFIED**.
+
+**Recommendation for audio.** Default: **transcript-only**,
+timestamped segments embedded with `gte-small`, hybrid FTS on the
+words. Runtime preference: **whisper.cpp subprocess** (MIT, CPU +
+Apple Silicon, no Python) or in-process Candle Whisper if the
+existing `candle` feature can load `tiny`/`small` without a new
+crate graph. `tiny` / `tiny.en` / `small.en` are the first pins;
+larger models stay configurable. CLAP is a later optional table.
+Diarization is later and must remain opt-in (gated Hub).
+
+### 3. Video: keyframes + ASR + time codes
+
+No local-first product reviewed here indexes "the video" as one
+vector. The workable decomposition:
+
+1. **Demux** an audio track (ffmpeg subprocess or a decoder crate).
+2. **ASR** that track with the audio phase; each segment carries
+   `start_ms` / `end_ms`.
+3. **Select frames**: scene-change or fixed-interval keyframes;
+   cap count and pixels the way PDF images already cap
+   `MAX_IMAGES` / `MAX_TOTAL_BYTES` / `MIN_DIMENSION`.
+4. **Caption and/or embed** those frames with the image phase.
+5. **Return** hits as `{file_path, start_ms, end_ms, content, score}`.
+   A client can seek a player; ragfs does not ship a player.
+
+Cloud contrast: [Twelve Labs Embed v2](https://docs.twelvelabs.io/api-reference/create-embeddings-v2/create-embeddings.mdx)
+uses Marengo 3.0 / 3.5 over HTTP (`x-api-key`). Sync limits (from
+that page): Marengo 3.5 audio/video up to 30 seconds; Marengo 3.0
+up to 10 minutes; longer files go through async tasks. This
+contradicts ADR-001 (local-first, no per-query API). It is prior
+art for *result shape* (time-ranged embeddings), not a backend.
+
+Keyframe policy is still chosen in the phase-6 PR. A current
+BSD-3-Clause candidate is
+[PySceneDetect v0.7.2](https://github.com/Breakthrough/PySceneDetect/releases/tag/v0.7.2)
+(published **2026-10-12**; PyPI
+[scenedetect 0.7.2](https://pypi.org/project/scenedetect/0.7.2/),
+BSD-3-Clause). That release is Python + OpenCV (or PyAV) and
+changes default histogram/hash thresholds — it is **not** a
+default CLI dependency. ffmpeg `select='gt(scene,…)'` remains
+the lighter subprocess alternative. **No recall or speed number
+is claimed here**; detector quality stays **UNVERIFIED** on ragfs
+fixtures.
+
+**Recommendation for video.** Last. Compose phases 1–5. Feature
+`video` implies `audio` + image caption/OCR. Default-off.
+No thumbnails in MCP/FUSE JSON in the first video PR (bytes and
+inode growth; see §5). Time codes are mandatory on every video-
+derived chunk.
+
+### 4. How comparable tools do it
+
+| Tool | What was fetched | Pattern | Fit for ragfs |
+|------|------------------|---------|---------------|
+| **LlamaIndex** | [Multi-modal models](https://developers.llamaindex.ai/python/framework/module_guides/models/multi_modal/); [`MultiModalVectorStoreIndex`](https://github.com/run-llama/llama_index/blob/main/llama-index-core/llama_index/core/indices/multi_modal/base.py) | **Separate** text store and image store. Default image embedder `clip:ViT-B/32`. Optional `is_image_to_text`. Fusion at retrieve time. | Same split (text table vs image table) is the right store shape. Default CLIP matches Haystack/Marqo. |
+| **Haystack** | [ImageFileToDocument](https://docs.haystack.deepset.ai/docs/imagefiletodocument); [SentenceTransformersDocumentImageEmbedder](https://docs.haystack.deepset.ai/docs/sentencetransformersdocumentimageembedder); [LLMDocumentContentExtractor](https://docs.haystack.deepset.ai/docs/llmdocumentcontentextractor) | Pipeline: wrap image path → CLIP embed (`sentence-transformers/clip-ViT-B-32` default; also lists jina-clip-v1/v2) **or** VLM caption via a vision `ChatGenerator`. | ragfs-python already exposes Haystack adapters. Caption path ≡ this ADR's phase 1–3. CLIP path ≡ phase 4. Do not pull jina-clip-v2 into the adapter default (NC). |
+| **Marqo** | [Unstructured multimodal index](https://marqo.pages.dev/latest/other-resources/cookbook/indexes/creating-an-unstructured-index/multimodal-index/); [model selection](https://marqo.pages.dev/latest/other-resources/cookbook/model-selection/multimodal-search/) | One CLIP/OpenCLIP model; `treatUrlsAndPointersAsImages`; weighted `multimodal_combination` of text + image into **one** vector. | Weighted fusion into a single vector loses "query the photo vs query the filename" control. Prefer LlamaIndex's two stores. |
+| **Twelve Labs** | Embed v2 docs cited above | Cloud-native video/audio/image embeddings (Marengo). | Result-shape prior art only. |
+| **Vespa** | [Embedding](https://docs.vespa.ai/en/embedding.html) (fetched; multimodal subsection is VoyageAI API models, not a local CLIP embedder) | Multimodal embeddings via **VoyageAI hosted API**. | Same reject as Twelve Labs for the product path. Useful as "schema can hold several tensor fields". |
+| **LanceDB** (ragfs already depends on this) | See the pin / v0.40.0 note below; [OpenCLIP integration](https://docs.lancedb.com/integrations/embedding/openclip); [Multimodal blobs](https://docs.lancedb.com/tables/multimodal); [Lance file format 2.2](https://www.lancedb.com/blog/lance-file-format-2-2-taming-complex-data) | Python `open-clip` embedding function (default ViT-B-32, `laion2b_s34b_b79k`, **CPU**). Binary / large-binary blob columns for raw bytes. Text *or* image queries. Blob V2 is a **format ≥2.2** feature. | Store layer already chosen (ADR-002). The Python helper is **not** what `ragfs-store` uses; embeddings are produced in Rust by Candle. Blob columns are optional later (thumbnails / raw frames); v1 stores paths + text, not image bytes in Lance. **Do not bump the crate in this ADR.** |
+
+Consensus worth copying: **two (or N) vector spaces**, CLIP-class
+defaults, caption as an alternative, time ranges for A/V, no
+requirement to store raw media in the vector table.
+
+**ragfs LanceDB pin vs upstream 0.40.0 (upgrade dependency).**
+This is a note for a *later* Cargo PR, not a change in this ADR.
+
+| Fact (fetched) | Source |
+|----------------|--------|
+| ragfs workspace pin | `Cargo.toml` `lancedb = "0.37.1"` with an intentional skip of 0.38.0 (`Error::Http` is `#[cfg(feature = "remote")]` while `src/job.rs` uses it under the default feature set). `Cargo.lock` resolves `lancedb` **0.37.1** and `lance` **10.0.0**. |
+| Current Rust crate | crates.io [`lancedb` 0.40.0](https://crates.io/crates/lancedb) published **2026-10-07**; depends on `lance =13.0.0`. GitHub [lancedb/lancedb v0.40.0](https://github.com/lancedb/lancedb/releases/tag/v0.40.0) (same date) lists a **Breaking Changes** section and states the release uses **Lance 13.0.0**. |
+| Current format crate | crates.io [`lance` 13.0.0](https://crates.io/crates/lance) published **2026-10-07**; repository metadata is **https://github.com/lance-format/lance** (repo moved off the older `lancedb/lance` path). |
+| Blob V2 needs format ≥2.2 | Lance blog [File Format 2.2](https://www.lancedb.com/blog/lance-file-format-2-2-taming-complex-data): Blob V2 is introduced in format 2.2 (`data_storage_version="2.2"`); writers must opt in. Blog compression / “68x faster blob reads” figures are **vendor claims**, not re-run. |
+
+Phase 1–3 do not need 0.40.0 or format 2.2: they write text / captions
+into the existing 384-d chunks table. A native image table (phase 4)
+and any later blob/thumbnail work **depend on a dedicated upgrade
+PR** that (a) re-checks whether the 0.38 `Error::Http` default-feature
+bug is gone on 0.40, (b) takes the 0.40 breaking list, (c) moves
+`lance` 10 → 13, and (d) only then considers `data_storage_version="2.2"`
+if ragfs actually stores blobs (this ADR’s v1 does not). Do not
+silently bump `lancedb` in a multimodal implementation PR.
+
+### 5. Local-first constraints
+
+**CPU-only and Apple Silicon.** ADR-001 already chose Candle for
+text. Candle CLIP + Candle Whisper run on CPU; Candle documents
+Accelerate on macOS. whisper.cpp documents Metal and Core ML on
+Apple Silicon. SigLIP 2 So400m / g and ColQwen (~2B) are not
+plausible default CPU indexers; Base/tiny/small pins are.
+
+**Model sizes (only numbers from fetched pages).**
+`gte-small` Hub **33.4M**, MIT (status quo). BLIP is already the
+vision pin. Whisper tiny 75 MiB ggml / ~273 MB RAM (whisper.cpp
+README). SigLIP 2 base Hub 375.2M dual-encoder. nomic-embed-vision
+92.9M. Anything ≥2B stays opt-in and documented as such.
+
+**Licences — do not default.**
+
+- `jinaai/jina-clip-v2`: **CC-BY-NC 4.0** (https://huggingface.co/jinaai/jina-clip-v2)
+- `jinaai/jina-embeddings-v5-omni-small` / `-nano`: **CC-BY-NC 4.0** (https://huggingface.co/jinaai/jina-embeddings-v5-omni-small) — omni text/image/video/audio; **reference only**
+- `Qwen/Qwen2.5-VL-3B-Instruct`: **qwen-research / NC** (https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct)
+- Prefer if a Qwen VLM is ever opted in: `Qwen/Qwen3-VL-2B-Instruct`, `Qwen/Qwen3.5-0.8B`, `Qwen/Qwen3.5-2B` — all Hub **`apache-2.0`**
+- `vidore/colqwen2.5-v0.2` / `vidore/colqwen2.5-base`: **qwen-research** via Qwen2.5-VL-3B-Instruct (https://huggingface.co/vidore/colqwen2.5-v0.2)
+- `vidore/colpali-v1.3`: adapter MIT, **Gemma / PaliGemma base** (https://huggingface.co/vidore/colpali-v1.3, https://huggingface.co/vidore/colpaligemma-3b-pt-448-base)
+- ColPali family (`colpali`, `colpali-v1.3`, `colqwen2-v1.0`, `colqwen2.5-v0.2`): **no official ONNX or GGUF** on the Hub cards/listings
+- `microsoft/msclap`: **MS-PL** (https://huggingface.co/microsoft/msclap)
+- `pyannote/speaker-diarization-3.1`: MIT **but gated** (https://huggingface.co/pyannote/speaker-diarization-3.1)
+- `openai/clip-vit-base-patch32`: **Hub licence tag missing** (https://huggingface.co/openai/clip-vit-base-patch32); do not treat weights as Apache-cleared
+
+Prefer Apache-2.0 / MIT / BSD-3 / CC-BY-4.0 (Parakeet) for anything
+that ships as a default pin.
+
+**Rust-native vs Python vs ONNX vs subprocess.**
+
+| Path | Use | Do not use for |
+|------|-----|----------------|
+| Candle in-process (existing `candle` / `vision`) | CLIP, BLIP, Whisper when the example path is productized | Models Candle does not implement (unverified: SigLIP 2, CLAP, ColQwen) |
+| Subprocess, pinned binary | whisper.cpp CLI; tesseract; optional ffmpeg | Unbounded `ffmpeg -i userfile` without args/timeouts |
+| `ort` / ONNX Runtime | Later, if a specific ONNX (SmolVLM-256M has an `onnx` Hub tag) is the only CPU path | Default graph in phase 1 |
+| Python (faster-whisper, NeMo Parakeet, Haystack VLM) | MCP/Python adapters may call these **outside** the Rust CLI | New required runtime for `ragfs index` |
+
+**Cargo features (all default-off except today's `vision`).**
+
+| Feature | Crate surface | What it unlocks |
+|---------|---------------|-----------------|
+| `vision` | already exists | BLIP captioner. Phase 1 *uses* it; does not add deps. |
+| `ocr` | `ragfs-extract` | Tesseract subprocess. |
+| `vision-embed` | `ragfs-embed` + `ragfs-store` | CLIP / SigLIP 2 second table. |
+| `audio` | `ragfs-extract` + indexer | ASR → timestamped text chunks. |
+| `video` | extract + index | Keyframes + ASR. Implies `audio`. |
+| `audio-embed` | later | CLAP table. |
+
+No feature in this sequence is on by default. `full` may grow only
+in a release PR after the owner accepts, not in the ADR PR.
+
+### 6. Index schema, MCP / FUSE, ADR-009
+
+**Schema (additive; new `CHUNKS_SCHEMA_VERSION` only when a column
+is required).**
+
+- Keep the existing chunks table as the **text / caption / transcript
+  / OCR** table. Still 384-d `gte-small` unless the user changes the
+  embedder (ADR-010 `--force`).
+- Add nullable `start_ms` / `end_ms` (`UInt32` or `UInt64`) and
+  `modality` (`Utf8`: `text` \| `image` \| `audio` \| `video`) when
+  audio/video land. Schema v3. Old rows: `modality = text`, times
+  null. FTS and ANN stay on this table.
+- Native image (and later audio) vectors: **new table**
+  `multimodal_chunks` (name fixed at implementation) with its own
+  `FixedSizeList` width and sidecar keys
+  `embedding_model_image` / `embedding_model_audio` next to today's
+  `embedding_model`. Opening a store with a different image model
+  id fails closed (ADR-010 rule). Mixed spaces in one list are
+  forbidden.
+- `Modality` enum: add `Video` when video ships; keep `Audio`
+  (already present).
+- `ContentType`: start using `ImageCaption`; add
+  `AudioTranscript { start_ms, end_ms }` and
+  `VideoFrame { start_ms }` (or store times only on the chunk
+  columns — pick one in the schema PR, test both query paths).
+- Do **not** store raw image/audio bytes in Lance in v1
+  (`ExtractedImage.data` is already an in-memory footgun). Path +
+  optional page/time is enough. Blob columns are a later PR if a
+  client needs thumbnails, and that PR must first upgrade past
+  the 0.37.1 pin: **Blob V2 requires Lance file format ≥2.2**,
+  which is not what `lance` 10.0.0 (today’s lockfile) writes by
+  default.
+
+**MCP and FUSE result shape.** Additive JSON keys, existing keys
+stable (same compatibility rule as ADR-008 receipts):
+
+```json
+{
+  "file": "talks/demo.mp4",
+  "score": 0.81,
+  "content": "…transcript or caption…",
+  "byte_range": [0, 0],
+  "line_range": null,
+  "modality": "video",
+  "start_ms": 142000,
+  "end_ms": 147500
+}
+```
+
+`byte_range` for a media file may be zero or the container byte
+span; clients should prefer `start_ms`. **No thumbnails** in the
+first MCP/FUSE PR: 500-char text is already the truncate policy;
+images in `.query` JSON or FUSE inodes would enlarge every listing
+and create a second decoder on the read path. A later opt-in
+`.ragfs/.thumbs/` can be its own ADR.
+
+**ADR-009 memory benchmark.** First-wave datasets are conversational
+text (LongMemEval, LoCoMo, BEAM, synthetic versioned facts).
+Multimodal is **out of band**: do not change the default embedder,
+do not add image items to versioned-facts, do not publish a
+"multimodal memory" score from this work. Threat to validity to
+record when a later phase exists: a tree that is half screenshots
+will look worse on a text-only protocol. Pins (`gte-small`, 384-d)
+stay the published text pin.
+
+Prior art for *multimodal memory* (not a first-wave harness
+target): **OpenVLHarness** — Zhou et al.,
+[arXiv:2610.26860](https://arxiv.org/abs/2610.26860)
+(“OpenVLHarness: Real World Visual Agentic Tool-Use with
+Multimodal Memory”, submitted **2026-10-19**;
+[HF paper](https://huggingface.co/papers/2610.26860);
+project [openvlharness.github.io](https://openvlharness.github.io/);
+code [uclanlp/OpenVLHarness](https://github.com/uclanlp/OpenVLHarness)).
+The paper describes a capability layer plus **persistent
+multimodal memory** (images, structured data, web references as
+addressable artifacts). Reported score deltas (e.g. +9.7–12.6
+over no-tool baselines) are **author claims**, not harness
+results. Record it next to ADR-009 as a later-phase candidate
+corpus / protocol to *cite*, not as a number to chase, and do
+not vendor their evaluation set in ragfs.
+
+### 7. Security (media-specific)
+
+ADR-010 exclusions, denylist, `.ragfsignore`, and purge apply to
+**all** media. A `.jpg` inside `.ssh` or a `.wav` named like a
+secret file is not a special case.
+
+Additional controls for implementation PRs:
+
+- **Decompression bombs.** PDF already bounds count, decompressed
+  bytes, and minimum dimension (`pdf.rs` 89–91, FlateDecode
+  `take(budget+1)`). `ImageExtractor` does **not**:
+  `image::load_from_memory` (`image.rs` 143–144) decodes the full
+  bitmap. Phase 1 must add a pixel-budget (and keep `max_file_size`).
+  Reject images whose `width * height` exceeds a documented cap
+  before caption/OCR/embed.
+- **Parser attack surface.** `lopdf`, `image`, and any future media
+  crate parse untrusted bytes. Prefer the already-used crates;
+  do not add a second JPEG decoder. No new image formats in phase 1.
+- **ffmpeg.** whisper.cpp's own README uses ffmpeg to make 16-bit
+  WAV. If ragfs shells out: fixed argv (no user-controlled flags),
+  timeout, output size cap, duration cap, no shell, no linked
+  libavcodec in the default binary. Linked ffmpeg is a CVEs-follow-
+  the-distro problem and is out of the first sequence.
+- **Subprocess vs linked.** tesseract and whisper.cpp as **optional
+  binaries on `PATH`** (or a config path) keep them out of
+  `Cargo.lock` until a later vendoring PR. Missing binary → skip
+  the file with a warning, do not fail the whole index.
+- **Size and duration.** Reuse `max_file_size` (50 MiB). Add
+  `index.max_media_duration_secs` (suggested default 30 minutes;
+  value fixed in the audio PR, not here as a measured optimum).
+  Skip + delete-if-previously-indexed, same as oversized files
+  (`indexer.rs` 676–684).
+- **No remote fetch.** Marqo/LanceDB helpers that pull image URLs
+  are not copied. Index local paths only.
+
+### Options considered
+
+**A — Caption-then-embed only (no native image vectors).**
+Pros: one table, one model fingerprint, ADR-009 intact, reuses
+`vision` + `gte-small`, hybrid FTS works on captions/OCR.
+Cons: "find photos of red bicycles" fails if the captioner said
+"a vehicle"; no image-to-image.
+
+**B — Native CLIP/SigLIP only (no captions).**
+Pros: true visual retrieval; matches LlamaIndex/Haystack/Marqo
+defaults. Cons: new space (breaks a naive single-table upsert);
+no FTS on the photo; screenshots with small text lose to OCR;
+Candle SigLIP 2 unverified.
+
+**C — Cloud multimodal APIs (Twelve Labs, VoyageAI via Vespa,
+hosted Jina).**
+Pros: video-native quality. Cons: rejects ADR-001 (privacy,
+offline, cost).
+
+**D — Single weighted fusion vector (Marqo `multimodal_combination`).**
+Pros: one ANN. Cons: cannot filter "image-only" vs "transcript-only";
+weights are a hidden retrieval knob.
+
+**E — Python sidecar (faster-whisper + OpenCLIP + Haystack).**
+Pros: fastest path to SOTA checkpoints. Cons: new runtime for a
+Rust CLI; MCP already has Python, the binary should not need it.
+
+**F — Do video in the same PR as images.**
+Pros: one story. Cons: ffmpeg + keyframes + ASR + schema at once;
+not a small PR.
+
+### Decision (detail)
+
+**Choose A then B, in that order, with C rejected, D rejected as
+the default, E rejected for the CLI, F rejected.**
+
+Phase 1 is A on the code that already exists (wire captions and
+`ImageCaption` into `process_file`). Phase 3 adds OCR to A.
+Phase 4 is B in a second table (SigLIP 2 Base or OpenCLIP/CLIP,
+Apache/MIT software, Hub licence checked again in that PR).
+Audio is A-for-speech (transcript in the text table). Video
+composes A+B after audio. Cloud APIs stay documentation
+contrast only.
+
+### Phased plan
+
+Each phase is **one future PR** after this ADR is accepted **and**
+after the ADR-010 sequence + 0.3.0 (see Context). Tests and
+acceptance criteria are required on every PR. No phase adds a
+dependency in *this* docs PR.
+
+| Phase | Future PR | Scope | Tests / acceptance | Flag |
+|-------|-----------|-------|--------------------|------|
+| **0** | This PR | ADR only. Status Proposed. | Docs render; TOC + Summary updated. No `Cargo.toml` / `pyproject` / version / tag. | n/a |
+| **1** | `feat(index): index image captions into ImageCaption chunks` | If `ExtractedImage.caption` or filename+geometry text is present, emit `ContentType::ImageCaption` chunks and embed them with `gte-small`. Wire `ImageExtractor::with_captioner` when `--features vision` and config enables it. Apply the same captioner to PDF `ExtractedImage`s (today `caption: None`). Pixel-budget on `ImageExtractor` decode. | Unit: captioned PNG → chunk content contains caption, `content_type` serializes `image_caption`. Uncaptioned → metadata sentence still indexed. PDF JPEG fixture → one image chunk after captioner stub. Decode of a huge-header PNG fails closed. Integration: `ragfs index` + `query` returns the caption text. CLI without `vision` unchanged. | existing `vision` for BLIP; caption-less metadata path stays default |
+| **2** | `feat(store): modality and time-range columns (schema v3)` | Additive `modality`, `start_ms`, `end_ms`. Sidecar keys reserved for per-modality model ids. `SearchResult` + FUSE + MCP JSON gain optional fields (absent ≡ text). | Old v2 index opens; nulls backfilled. New rows round-trip. Receipts remain additive. No behaviour change for text queries. | none |
+| **3** | `feat(extract): OCR images and PDF pages` | tesseract on `PATH` (or config). Text merged into the caption/metadata chunk. Skip if binary missing. | Fixture screenshot with known word is found via `query` and via FTS. Missing tesseract → warning, index continues. Pixel-budget still applies. | `ocr` default-off |
+| **4** | `feat(embed): CLIP/SigLIP image table` | Second Lance table. Query path: embed the query with the image text tower, search that table, merge/rerank with text hits (simple score interleave is enough; no learned fusion). Pin one Apache-2.0 model (SigLIP 2 Base **or** OpenCLIP, re-verified in the PR). Refuse open if sidecar image model mismatches (ADR-010 rule). | Text-only index still works with the feature off. Feature on: query "red bicycle" hits a bicycle photo whose caption omitted the word (fixture). Model-id mismatch errors without `--force`. Dimension ≠ 384. | `vision-embed` default-off |
+| **5** | `feat(extract): timestamped audio transcripts` | MIME `audio/mpeg`, `audio/wav`, `audio/x-wav`, `audio/mp4` (audio-only) as a starting set — exact list fixed in the PR from what the decoder accepts. Whisper tiny/small via whisper.cpp **or** Candle. Chunks carry `start_ms`/`end_ms`. Duration + size limits. | WAV fixture with known phrase → query hit with a non-null time range in CLI JSON, FUSE `.query`, and MCP `ragfs_search`. Over-duration file skipped and purged. Missing binary → skip + warn. | `audio` default-off |
+| **6** | `feat(extract): video keyframes and ASR track` | Video MIME starting with `video/mp4` (the current unsupported test). Keyframe cap. Reuse phase 1/3/5. | MP4 fixture with speech + a distinct visual → text query hits the transcript range; a visual query (if phase 4 on) hits a frame near that time. `video/mp4` registry test updated. ffmpeg/decoder failure is a skip, not a panic. | `video` default-off |
+| **7** | optional, own PR | CLAP table; diarization; ColQwen late-interaction; thumbnails. Each needs its own licence re-check. | As specified in that PR. | new flags, default-off |
+
+Phases 4 and 5 may run in parallel after 2. Phase 6 requires 5 and
+1 (3 and 4 optional but recommended). Phase 7 is not scheduled
+until the owner asks.
+
+### Non-goals
+
+- Changing the default text embedder away from `gte-small`.
+- Shipping a cloud video/image API.
+- Thumbnails or raw media blobs in Lance / FUSE in the first
+  sequence.
+- Making `vision`, `ocr`, `audio`, or `video` default-on.
+- Vendoring ffmpeg or tesseract into the crate graph in phase 1–3.
+- Implementing any phase after 0 in *this* change.
+- Version bump or tag.
+- Content-level secret scanning of image/audio bytes (still a later
+  ADR, as in ADR-010).
+
+### Rationale
+The useful increment is not "add CLIP". It is "make the image path
+that already exists actually searchable, under the same exclusion
+and fingerprint rules as text." Caption + OCR reuse one embedding
+space and keep ADR-009 honest. A second table is how every
+serious local multimodal index (LlamaIndex, Haystack, LanceDB's
+own CLIP helper) avoids mixing dimensions. Audio as text is how
+voice notes become `ragfs query` hits on CPU. Video is that
+pipeline plus a clock. Licences that are NC, research-only, or
+Gemma-gated are documented so a future PR cannot quietly default
+them.
+
+### Trade-offs
+
+**Pros**
+
+- Smallest first PR is a wiring fix, not a new model.
+- One default embedding space for all *language* derived from media.
+- Native visual search is possible later without rewriting text
+  indexes.
+- Default-off flags keep the 0.3.0 binary and the memory bench pin
+  stable.
+- Attack surface grows per phase (pixel budget, then subprocess,
+  then demux), not all at once.
+
+**Cons**
+
+- Caption-only retrieval misses uncaptioned visual similarity until
+  phase 4.
+- Two tables mean two ANN queries and a merge.
+- whisper.cpp/tesseract/ffmpeg as PATH binaries are an operator
+  dependency.
+- ColPali-quality page retrieval is deferred.
+- CPU indexing of large video corpora will be slow; no number is
+  claimed here.
+
+### Alternatives considered
+
+| Alternative | Rejected because |
+|-------------|------------------|
+| Native CLIP as phase 1 | Leaves the existing caption pipeline dark; mixes or forks the 384-d table before ADR-010's model check ships |
+| Default jina-clip-v2, jina-embeddings-v5-omni-*, Qwen2.5-VL-3B, or colqwen2.5 | CC-BY-NC / qwen-research |
+| Bump `lancedb` to 0.40.0 inside a multimodal PR | Separate dep PR: Lance 13 + 0.40 breaking list; Blob V2 unused until we store blobs |
+| Default ColPali v1.3 | Gemma / PaliGemma base + multi-vector store + no official ONNX/GGUF |
+| Default microsoft/msclap | MS-PL |
+| Twelve Labs / VoyageAI in-process | Network, keys, contradicts ADR-001 |
+| Marqo-style single fused vector | Hides modality; harder to filter transcripts vs frames |
+| Python-only ASR in the CLI | Splits the install story; MCP may use it later, the binary should not require it |
+| Linked libav* in default features | Parser CVEs on every host; subprocess + caps first |
+| Video in the same PR as images | ffmpeg + schema + ASR is not one small PR |
+| Implement in this PR | Owner has not accepted the design; this change is the Proposed ADR only |
+| Start before ADR-010 / 0.3.0 | Would index more media under the weaker exclude list and without a fail-closed model fingerprint |
+
+### Sources verified
+
+Checked against the official paper, Hub card, repository README, or
+vendor docs while writing this ADR (dates in those records, not
+this file's clock). Social posts are not sources.
+
+**This repo** @ `e310209c` (ADR-010) and the code paths listed under
+"Verified on `main`": `crates/ragfs-core/src/{types,traits,error}.rs`,
+`crates/ragfs-extract/src/{image,vision,pdf,registry}.rs`,
+`crates/ragfs-extract/Cargo.toml`, `crates/ragfs/src/{main,config}.rs`,
+`crates/ragfs/Cargo.toml`, workspace `Cargo.toml` (`lancedb = "0.37.1"`),
+`Cargo.lock` (`lance` 10.0.0), `crates/ragfs-index/src/indexer.rs`,
+`crates/ragfs-store/src/{schema,lancedb}.rs`,
+`crates/ragfs-fuse/src/filesystem/mod.rs`,
+`crates/ragfs-mcp/src/ragfs_mcp/server.py`,
+`docs/API.md`, `docs/CONFIGURATION.md`, `docs/ARCHITECTURE.md`,
+ADR-001/002/009/010 in this file.
+
+**Images (Hub URLs for every model named).** CLIP paper
+arXiv:2103.00020; https://huggingface.co/openai/clip-vit-base-patch32
+(no licence tag);
+[openai/CLIP LICENSE](https://raw.githubusercontent.com/openai/CLIP/main/LICENSE)
+(MIT software); Candle CLIP docs.rs + example; SigLIP 2
+arXiv:2502.14786 and
+[README_siglip2.md](https://github.com/google-research/big_vision/blob/main/big_vision/configs/proj/image_text/README_siglip2.md);
+https://huggingface.co/google/siglip2-base-patch16-224 (`apache-2.0`,
+Hub 375.2M);
+https://huggingface.co/jinaai/jina-clip-v2 (**CC-BY-NC-4.0**,
+Hub 865.3M, arXiv:2412.08802);
+https://huggingface.co/jinaai/jina-embeddings-v5-omni-small
+(**CC-BY-NC-4.0**, Hub 1626.3M, arXiv:2605.08384; omni
+text/image/video/audio; **no** Hub repo `jinaai/jina-embeddings-v5-omni`);
+https://huggingface.co/jinaai/jina-embeddings-v5-omni-nano;
+https://huggingface.co/nomic-ai/nomic-embed-vision-v1.5 and
+https://huggingface.co/nomic-ai/nomic-embed-text-v1.5 (`apache-2.0`,
+arXiv:2406.18587);
+https://huggingface.co/vidore/colpali ,
+https://huggingface.co/vidore/colpali-v1.3 ,
+https://huggingface.co/vidore/colpaligemma-3b-pt-448-base
+(`license:gemma`),
+https://huggingface.co/vidore/colqwen2-v1.0 ,
+https://huggingface.co/vidore/colqwen2-base ,
+https://huggingface.co/vidore/colqwen2.5-v0.2 ,
+https://huggingface.co/vidore/colqwen2.5-base
+(arXiv:2407.01449; ColPali family: **no official ONNX/GGUF**;
+colqwen2.5: **qwen-research** via Qwen2.5-VL-3B);
+[Gemma Terms](https://ai.google.dev/gemma/terms);
+https://huggingface.co/Salesforce/blip-image-captioning-base
+(`bsd-3-clause`, arXiv:2201.12086);
+https://huggingface.co/HuggingFaceTB/SmolVLM-256M-Instruct ,
+https://huggingface.co/HuggingFaceTB/SmolVLM-500M-Instruct ,
+https://huggingface.co/HuggingFaceTB/SmolVLM-Instruct
+(arXiv:2504.05299, `apache-2.0`; 256M/500M have `onnx` tags);
+https://huggingface.co/microsoft/Florence-2-base (`mit`, card 0.23B,
+arXiv:2311.06242);
+https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct README +
+[LICENSE](https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct/raw/main/LICENSE)
+(**qwen-research**, non-commercial);
+https://huggingface.co/Qwen/Qwen3-VL-2B-Instruct (`apache-2.0`,
+Hub 2127.5M);
+https://huggingface.co/Qwen/Qwen3.5-0.8B (`apache-2.0`, Hub 873.4M);
+https://huggingface.co/Qwen/Qwen3.5-2B (`apache-2.0`, Hub 2274.1M);
+[colpali-engine 0.3.18](https://pypi.org/project/colpali-engine/0.3.18/)
+(2026-08-22; `transformers>=5.3.0,<6.0.0`);
+https://huggingface.co/thenlper/gte-small (`mit`, Hub 33.4M);
+[Tesseract LICENSE](https://raw.githubusercontent.com/tesseract-ocr/tesseract/main/LICENSE)
+(Apache-2.0).
+
+**Audio.** whisper.cpp README (MIT, memory table, ffmpeg note);
+[whisper.cpp v1.9.5](https://github.com/ggml-org/whisper.cpp/releases/tag/v1.9.5)
+(2026-10-06);
+faster-whisper README + MIT LICENSE;
+[faster-whisper v1.2.1](https://github.com/SYSTRAN/faster-whisper/releases/tag/v1.2.1)
+(2025-10-31; latest on fetch);
+https://huggingface.co/openai/whisper-tiny ,
+https://huggingface.co/openai/whisper-small (`apache-2.0`,
+arXiv:2212.04356);
+https://huggingface.co/distil-whisper/distil-small.en (`mit`,
+arXiv:2311.00430);
+Candle Whisper example;
+https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2 (`cc-by-4.0`);
+`laion/clap-htsat-fused` (https://huggingface.co/laion/clap-htsat-fused,
+`apache-2.0`, arXiv:2211.06687);
+`microsoft/msclap` (https://huggingface.co/microsoft/msclap, **MS-PL**);
+`pyannote/speaker-diarization-3.1`
+(https://huggingface.co/pyannote/speaker-diarization-3.1, `mit`, gated).
+
+**Video / vendors.** Twelve Labs
+[Create sync embeddings](https://docs.twelvelabs.io/api-reference/create-embeddings-v2/create-embeddings.mdx);
+LlamaIndex multimodal module + `MultiModalVectorStoreIndex` source;
+Haystack ImageFileToDocument, SentenceTransformersDocumentImageEmbedder,
+LLMDocumentContentExtractor;
+Marqo unstructured multimodal index + model-selection pages;
+Vespa embedding guide (VoyageAI multimodal);
+LanceDB OpenCLIP + multimodal blob docs;
+[open_clip LICENSE](https://raw.githubusercontent.com/mlfoundations/open_clip/main/LICENSE)
+(MIT software);
+crates.io [lancedb 0.40.0](https://crates.io/crates/lancedb)
+(2026-10-07, `lance =13.0.0`) and
+[lance 13.0.0](https://crates.io/crates/lance)
+(repo https://github.com/lance-format/lance);
+[lancedb v0.40.0 release](https://github.com/lancedb/lancedb/releases/tag/v0.40.0)
+(Breaking Changes + Lance 13);
+[Lance file format 2.2 / Blob V2](https://www.lancedb.com/blog/lance-file-format-2-2-taming-complex-data);
+[PySceneDetect v0.7.2](https://github.com/Breakthrough/PySceneDetect/releases/tag/v0.7.2)
+(2026-10-12, BSD-3-Clause);
+[scenedetect 0.7.2](https://pypi.org/project/scenedetect/0.7.2/);
+OpenVLHarness [arXiv:2610.26860](https://arxiv.org/abs/2610.26860)
+(2026-10-19), [HF paper](https://huggingface.co/papers/2610.26860),
+[uclanlp/OpenVLHarness](https://github.com/uclanlp/OpenVLHarness).
+
+**UNVERIFIED** in this pass (do not treat as facts):
+
+- SigLIP 2 availability inside `candle-transformers`
+- CLAP (LAION or msclap) in Candle
+- A Hub `license:` tag on `openai/clip-vit-base-patch32` weights
+- CPU latency or VRAM for any model on ragfs hardware
+- PySceneDetect (including v0.7.2) recall/precision on ragfs fixtures,
+  or any keyframe algorithm's quality
+- Whether LanceDB's *Rust* crate exposes the Python `open-clip`
+  embedding function (the Python docs were fetched; the Rust API
+  was not)
+- Whether the 0.38.0 `Error::Http` default-feature bug is gone in
+  `lancedb` 0.40.0 (crates.io lists 0.40.0; the 0.38 source was not
+  re-diffed here)
+- Community / unofficial ONNX or GGUF conversions of the ColPali
+  family (official Hub repos listed above have none)
+- A parameter count for `microsoft/msclap` (Hub overview omitted it)
+- Whether a future commercial grant exists for Qwen2.5-VL-3B-Instruct
+  (the fetched LICENSE is research / NC unless separately licensed)
+- Reconciliation of Hub **1626.3M** vs card “~1.74B” on
+  `jina-embeddings-v5-omni-small`
+- OpenVLHarness author-reported deltas as ragfs harness numbers
+  (cite the paper; do not copy scores into ADR-009 results)
+
+**Vendor / author claims (labelled, not adopted as measurements):**
+Lance format 2.2 blog storage and “68x faster blob reads”;
+crates.io lance README “100x faster than Parquet”;
+Qwen3-VL card “most powerful … to date”;
+jina-embeddings-v5-omni-small card “open-weight frontier” /
+Table 1 scores; OpenVLHarness +9.7–12.6 tool-use deltas;
+Twelve Labs / Marqo / vendor latency pages.
+
+
 ## Summary
 
 | Decision | Key Driver |
@@ -1500,6 +2316,7 @@ Social posts are not sources.
 | Sidecar index revision + opt-in receipts | Backward-compatible audit of retrieval |
 | Transparent memory benchmark harness (Accepted) | Protocol, pins, and dual scoring before any published number |
 | Index exclusion, secret denylist, model fingerprint (Accepted) | Default-deny hidden/secret paths; fail-closed model mix |
+| Multimodal indexing (Proposed) | Text-first captions/OCR/ASR; separate table for native CLIP/SigLIP; default-off flags |
 
 These decisions collectively create a system that is:
 - **Private**: All processing local
