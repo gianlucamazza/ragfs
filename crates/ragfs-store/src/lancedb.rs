@@ -121,7 +121,22 @@ impl LanceStore {
     }
 
     async fn ensure_model_matches(&self) -> Result<(), StoreError> {
-        if let Some(sidecar) = self.read_schema_sidecar().await {
+        let path = self.schema_sidecar_path();
+        let sidecar = match tokio::fs::read(&path).await {
+            Ok(bytes) => Some(
+                serde_json::from_slice::<SchemaSidecar>(&bytes).map_err(|e| {
+                    StoreError::Schema(format!("Invalid index fingerprint {}: {e}", path.display()))
+                })?,
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(StoreError::Schema(format!(
+                    "Cannot read index fingerprint {}: {error}",
+                    path.display()
+                )));
+            }
+        };
+        if let Some(sidecar) = sidecar {
             if let (Some(stored), Some(requested)) = (
                 sidecar.embedding_model.as_deref(),
                 self.embedding_model.as_deref(),

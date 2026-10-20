@@ -253,6 +253,7 @@ fn get_log_path(source: &Path) -> Result<PathBuf> {
 async fn create_components(
     source: PathBuf,
     config: &Config,
+    for_indexing: bool,
 ) -> Result<(
     Arc<LanceStore>,
     Arc<ExtractorRegistry>,
@@ -292,11 +293,12 @@ async fn create_components(
         ))
     };
 
-    let store = Arc::new(
-        LanceStore::new(db_path, embedder_pool.dimension())
-            .with_embedding_model(embedder_pool.model_name())
-            .with_min_alnum_chars(config.chunking.min_alnum_chars),
-    );
+    let mut store = LanceStore::new(db_path, embedder_pool.dimension())
+        .with_embedding_model(embedder_pool.model_name());
+    if for_indexing {
+        store = store.with_min_alnum_chars(config.chunking.min_alnum_chars);
+    }
+    let store = Arc::new(store);
 
     let mut extractors = ExtractorRegistry::new();
     extractors.register("text", TextExtractor::new());
@@ -313,6 +315,21 @@ async fn create_components(
     let chunkers = Arc::new(chunkers);
 
     Ok((store, extractors, chunkers, embedder_pool))
+}
+
+/// Apply a new ingestion policy before scan or mount; query opens never claim
+/// that existing rows were filtered by a policy they have not been through.
+async fn prepare_index_store(store: &LanceStore, config: &Config, force: bool) -> Result<()> {
+    if force {
+        store.rebuild().await.context("Failed to rebuild index")?;
+    } else if store.indexed_min_alnum_chars().await != Some(config.chunking.min_alnum_chars) {
+        store.init().await.context("Failed to initialize store")?;
+        store
+            .rebuild()
+            .await
+            .context("Failed to apply chunk policy")?;
+    }
+    Ok(())
 }
 
 fn use_test_noop_embedder() -> bool {
@@ -483,10 +500,9 @@ async fn run(cli: Cli) -> Result<()> {
 
             // Create components for RAG functionality
             let (store, extractors, chunkers, embedder_pool) =
-                create_components(source.clone(), &config).await?;
+                create_components(source.clone(), &config, true).await?;
 
-            // Initialize store
-            store.init().await.context("Failed to initialize store")?;
+            prepare_index_store(&store, &config, false).await?;
 
             let indexer_config = config.to_indexer_config_with(false, include_hidden);
 
@@ -608,20 +624,9 @@ async fn run(cli: Cli) -> Result<()> {
             info!("Indexing {:?} (force={})", path, force);
 
             let (store, extractors, chunkers, embedder) =
-                create_components(path.clone(), &config).await?;
+                create_components(path.clone(), &config, true).await?;
 
-            if force {
-                store.rebuild().await.context("Failed to rebuild index")?;
-            } else if store.indexed_min_alnum_chars().await != Some(config.chunking.min_alnum_chars)
-            {
-                // Validate the model before changing policy; only --force may
-                // authorize rebuilding an index made by a different model.
-                store.init().await.context("Failed to initialize store")?;
-                store
-                    .rebuild()
-                    .await
-                    .context("Failed to apply chunk policy")?;
-            }
+            prepare_index_store(&store, &config, force).await?;
 
             let indexer_config = config.to_indexer_config_with(force, include_hidden);
 
@@ -708,7 +713,7 @@ async fn run(cli: Cli) -> Result<()> {
             }
 
             let (store, _extractors, _chunkers, embedder) =
-                create_components(path, &config).await?;
+                create_components(path, &config, false).await?;
 
             // Initialize store
             store.init().await.context("Failed to initialize store")?;

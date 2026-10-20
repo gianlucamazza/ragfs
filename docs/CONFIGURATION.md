@@ -499,8 +499,7 @@ No user-global ignore file or ancestor file above the root is read.
 decimal digits (Nd) count; punctuation-only chunks are discarded before embedding.
 The applied value is stored in `ragfs-schema.json` and returned in query JSON and
 receipts. `ragfs index` rebuilds when this policy changes; the first index pass on
-a legacy index also applies the new policy. Mount users should run this index
-pass before mounting an existing index with a changed chunking policy.
+a legacy index also applies the new policy. Mount startup also applies a changed chunking policy before its initial scan.
 
 Opening an index with a different known model id or vector dimension fails with
 an explicit error. `ragfs index <path> --force` rebuilds the index tables and
