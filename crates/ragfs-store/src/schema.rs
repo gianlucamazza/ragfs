@@ -29,6 +29,9 @@ pub struct SchemaSidecar {
     /// Alphanumeric floor used during indexing (absent on legacy indexes).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_alnum_chars: Option<usize>,
+    /// A failed table rebuild must be retried explicitly before serving queries.
+    #[serde(default)]
+    pub rebuild_in_progress: bool,
     /// Monotonic retrieval revision. Missing on pre-receipt indexes (`0`).
     ///
     /// This is sidecar metadata, not a Lance table schema change:
@@ -45,6 +48,7 @@ impl Default for SchemaSidecar {
             embedding_dim: None,
             embedding_model: None,
             min_alnum_chars: None,
+            rebuild_in_progress: false,
             index_revision: 0,
         }
     }
@@ -199,6 +203,7 @@ mod tests {
             embedding_model: Some("thenlper/gte-small".into()),
             index_revision: 7,
             min_alnum_chars: Some(3),
+            rebuild_in_progress: false,
         };
         let json = serde_json::to_string(&original).unwrap();
         let parsed: SchemaSidecar = serde_json::from_str(&json).unwrap();
