@@ -80,7 +80,7 @@ struct Cli {
     verbose: bool,
 
     /// Output format (text, json)
-    #[arg(short, long, default_value = "text")]
+    #[arg(short, long, global = true, default_value = "text")]
     format: OutputFormat,
 
     #[command(subcommand)]
@@ -916,6 +916,14 @@ fn truncate(s: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod save_receipt_flag {
     use super::*;
+
+    #[test]
+    fn output_format_accepts_documented_subcommand_position() {
+        let cli = Cli::try_parse_from(["ragfs", "query", "/tmp", "q", "--format", "json"]).unwrap();
+        assert!(matches!(cli.format, OutputFormat::Json));
+        let cli = Cli::try_parse_from(["ragfs", "--format", "json", "status", "/tmp"]).unwrap();
+        assert!(matches!(cli.format, OutputFormat::Json));
+    }
 
     #[test]
     fn absent_flag_is_none() {
