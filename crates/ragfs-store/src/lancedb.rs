@@ -671,6 +671,7 @@ impl LanceStore {
             .map_err(|e| StoreError::Schema(format!("Failed to read chunks schema: {e}")))?;
         self.ensure_embedding_dim_matches(&schema)?;
         let mut missing = missing_scope_columns(&schema);
+        let needs_scope_backfill = !missing.is_empty();
         missing.extend(missing_media_columns(&schema));
         let sidecar_version = self
             .read_schema_sidecar()
@@ -699,7 +700,9 @@ impl LanceStore {
             *self.chunks_table.write().await = None;
         }
 
-        self.backfill_scope_columns().await?;
+        if needs_scope_backfill || sidecar_version < 2 {
+            self.backfill_scope_columns().await?;
+        }
         self.get_chunks_table()
             .await?
             .update()
@@ -3248,12 +3251,15 @@ mod tests {
         let temp = tempdir().unwrap();
         let db_path = temp.path().join("old.lance");
         let store = LanceStore::new(db_path.clone(), TEST_DIM);
-        let chunk = create_test_chunk(
+        let mut chunk = create_test_chunk(
             Path::new("/project/old.txt"),
             "old text",
             create_random_embedding(TEST_DIM),
             0,
         );
+        chunk.dir_path = String::new();
+        chunk.dir_depth = 0;
+        chunk.path_components = "old.txt".into();
         let current = store.chunks_to_batch(&[chunk]).unwrap();
         let indices: Vec<usize> = (0..current.num_columns() - 3).collect();
         let old = current.project(&indices).unwrap();
@@ -3267,12 +3273,19 @@ mod tests {
         .execute()
         .await
         .unwrap();
+        std::fs::write(
+            temp.path().join(SCHEMA_SIDECAR_FILENAME),
+            r#"{"chunks_schema_version":2,"index_revision":7}"#,
+        )
+        .unwrap();
         store.init().await.unwrap();
         let revision = store.index_revision().await.unwrap();
         store.init().await.unwrap();
         assert_eq!(store.index_revision().await.unwrap(), revision);
         let chunks = store.get_all_chunks().await.unwrap();
         assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].dir_path, "");
+        assert_eq!(chunks[0].path_components, "old.txt");
         assert_eq!(chunks[0].metadata.media, ragfs_core::MediaInfo::default());
     }
 
