@@ -19,9 +19,7 @@ only (not measurements).
   purpose). The `ignore` crate is not a dependency yet.
 - There is no `docs/community-forks.md` yet.
 
-Issue links are placeholders until the maintainer creates GitHub issues from
-this plan. Replace `(issue: TBD-<key>)` with the real URL or `#N` when those
-exist. Keys match the companion JSON used to open issues.
+Tracked on the [milestones](https://github.com/gianlucamazza/ragfs/milestones) page.
 
 | Status | Meaning |
 |--------|---------|
@@ -85,7 +83,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 | Field | Value |
 |-------|--------|
 | Status | **In progress** (another agent; no public PR on the repo at plan writing) |
-| Issue | (issue: TBD-adr010-pr1) |
+| Issue | (#179) |
 | Size | L (~800–1500 LOC, mostly matcher + CLI/MCP/FUSE tests) |
 | Gate | CoS merge |
 | Feature flag | none (new product defaults) |
@@ -142,7 +140,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 | Field | Value |
 |-------|--------|
 | Status | Not started |
-| Issue | (issue: TBD-adr010-pr2) |
+| Issue | (#180) |
 | Size | M (~250–500 LOC) |
 | Gate | CoS merge |
 | Feature flag | none |
@@ -168,7 +166,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 | Field | Value |
 |-------|--------|
 | Status | Not started |
-| Issue | (issue: TBD-adr010-pr3) |
+| Issue | (#181) |
 | Size | M (~200–400 LOC) |
 | Gate | CoS merge |
 | Feature flag | none |
@@ -203,7 +201,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 | Field | Value |
 |-------|--------|
 | Status | Not started |
-| Issue | (issue: TBD-adr010-pr4) |
+| Issue | (#182) |
 | Size | S (~150–300 LOC) |
 | Gate | CoS merge |
 | Feature flag | none |
@@ -227,7 +225,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 | Field | Value |
 |-------|--------|
 | Status | Not started |
-| Issue | (issue: TBD-adr010-pr5) |
+| Issue | (#183) |
 | Size | S (~50–150 LOC) |
 | Gate | CoS merge |
 | Feature flag | none |
@@ -249,7 +247,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 | Field | Value |
 |-------|--------|
 | Status | Not started |
-| Issue | (issue: TBD-adr010-pr6) |
+| Issue | (#184) |
 | Size | S (~100–250 LOC); M (~+100–300) only if the test fails and FTS must be refreshed |
 | Gate | CoS merge |
 | Feature flag | none (do **not** make hybrid opt-in) |
@@ -274,7 +272,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 | Field | Value |
 |-------|--------|
 | Status | Not started |
-| Issue | (issue: TBD-adr010-pr7) |
+| Issue | (#185) |
 | Size | M (~200–400 LOC, mostly Cargo + CI + CLI error path) |
 | Gate | CoS merge |
 | Feature flag | `mount` on `ragfs` (and the `ragfs-fuse` dependency). **Default on** for the published binary (ADR-004 stays the product default) |
@@ -298,7 +296,7 @@ the source commits in that PR body. ADR-010 PR 8 (community-forks credits) is
 | Field | Value |
 |-------|--------|
 | Status | Not started |
-| Issue | (issue: TBD-adr010-release) |
+| Issue | (#186) |
 | Size | S (CHANGELOG + version bump across workspace / Python packages; follow the 0.2.2 release-prep pattern) |
 | Gate | **Gianluca** |
 | Feature flag | none |
@@ -358,7 +356,7 @@ Captions into the existing text table (ADR-011 phase 1).
 | Field | Value |
 |-------|--------|
 | Status | Not started |
-| Issue | (issue: TBD-adr011-p1) |
+| Issue | (#187) |
 | Size | M (~300–600 LOC) |
 | Gate | CoS merge; **Gianluca** if this PR grows `full` or adds a new model download beyond the existing BLIP pin |
 | Feature flag | existing `vision` for BLIP; caption-less metadata path stays default (no new default-on flag) |
@@ -398,7 +396,7 @@ summary skipped this phase; the ADR includes it, so it is in the plan.
 | Field | Value |
 |-------|--------|
 | Status | Not started |
-| Issue | (issue: TBD-adr011-p2) |
+| Issue | (#188) |
 | Size | M (~250–500 LOC) |
 | Gate | CoS merge |
 | Feature flag | none |
@@ -432,7 +430,7 @@ OCR into the existing text table (ADR-011 phase 3).
 | Field | Value |
 |-------|--------|
 | Status | Not started |
-| Issue | (issue: TBD-adr011-p3) |
+| Issue | (#189) |
 | Size | M (~300–600 LOC) |
 | Gate | CoS merge; **Gianluca** if tesseract is vendored into `Cargo.lock` instead of PATH |
 | Feature flag | `ocr` default-off |
@@ -460,7 +458,7 @@ Separate CLIP / SigLIP 2 table (ADR-011 phase 4).
 | Field | Value |
 |-------|--------|
 | Status | Not started |
-| Issue | (issue: TBD-adr011-p4) |
+| Issue | (#190) |
 | Size | L (~600–1200 LOC) |
 | Gate | **Gianluca** (new model download / heavy embedder; Hub licence re-check; pin choice) |
 | Feature flag | `vision-embed` default-off |
@@ -497,7 +495,7 @@ whisper.cpp timestamped audio (ADR-011 phase 5).
 | Field | Value |
 |-------|--------|
 | Status | Not started |
-| Issue | (issue: TBD-adr011-p5) |
+| Issue | (#191) |
 | Size | L (~600–1200 LOC) |
 | Gate | **Gianluca** (new model download; whisper.cpp vs Candle Whisper; duration default) |
 | Feature flag | `audio` default-off |
@@ -537,7 +535,7 @@ Video last (ADR-011 phase 6): keyframes + ASR track.
 | Field | Value |
 |-------|--------|
 | Status | Not started |
-| Issue | (issue: TBD-adr011-p6) |
+| Issue | (#192) |
 | Size | L (~700–1500 LOC) |
 | Gate | **Gianluca** (keyframe policy; optional ffmpeg; new decoder surface) |
 | Feature flag | `video` default-off (implies `audio`) |
@@ -574,7 +572,7 @@ licence re-check.
 | Field | Value |
 |-------|--------|
 | Status | Unscheduled |
-| Issue | (issue: TBD-adr011-p7) |
+| Issue | (#193) |
 | Size | L (split into separate PRs if ever started) |
 | Gate | **Gianluca** |
 | Feature flag | new flags, default-off (`audio-embed`, etc.) |
@@ -625,7 +623,7 @@ multimodal work (see [Critical path](#critical-path)).
 | Field | Value |
 |-------|--------|
 | Status | Not started |
-| Issue | (issue: TBD-adr009-p1) |
+| Issue | (#194) |
 | Size | M (~200–400 LOC of schema/docs, possibly a schema-only module) |
 | Gate | CoS merge |
 | Feature flag | none |
@@ -654,7 +652,7 @@ multimodal work (see [Critical path](#critical-path)).
 | Field | Value |
 |-------|--------|
 | Status | Not started |
-| Issue | (issue: TBD-adr009-p2) |
+| Issue | (#195) |
 | Size | M (~300–600 LOC including fixtures) |
 | Gate | CoS merge |
 | Feature flag | none |
@@ -683,7 +681,7 @@ multimodal work (see [Critical path](#critical-path)).
 | Field | Value |
 |-------|--------|
 | Status | Not started |
-| Issue | (issue: TBD-adr009-p3) |
+| Issue | (#196) |
 | Size | M (~400–800 LOC) |
 | Gate | CoS merge; **Gianluca** if a new embedder pin/download is added beyond `gte-small` |
 | Feature flag | none (harness adapters, not Cargo features) |
@@ -714,7 +712,7 @@ multimodal work (see [Critical path](#critical-path)).
 | Field | Value |
 |-------|--------|
 | Status | Not started |
-| Issue | (issue: TBD-adr009-p4) |
+| Issue | (#197) |
 | Size | M (~300–600 LOC) |
 | Gate | CoS merge |
 | Feature flag | none |
@@ -746,7 +744,7 @@ multimodal work (see [Critical path](#critical-path)).
 | Field | Value |
 |-------|--------|
 | Status | Not started |
-| Issue | (issue: TBD-adr009-p5) |
+| Issue | (#198) |
 | Size | M (~300–600 LOC) |
 | Gate | CoS merge |
 | Feature flag | none |
@@ -774,7 +772,7 @@ multimodal work (see [Critical path](#critical-path)).
 | Field | Value |
 |-------|--------|
 | Status | Not started |
-| Issue | (issue: TBD-adr009-p6) |
+| Issue | (#199) |
 | Size | L (fetch + pin + scoring path) |
 | Gate | **Gianluca** (public dataset pin; publishing any number) |
 | Feature flag | none |
@@ -802,7 +800,7 @@ multimodal work (see [Critical path](#critical-path)).
 | Field | Value |
 |-------|--------|
 | Status | Not started |
-| Issue | (issue: TBD-adr009-p7) |
+| Issue | (#200) |
 | Size | M (~200–500 LOC plus fetch/pin, no vendored JSON) |
 | Gate | **Gianluca** (CC BY-NC 4.0 evaluation; publishing any number) |
 | Feature flag | none |
@@ -828,7 +826,7 @@ multimodal work (see [Critical path](#critical-path)).
 | Field | Value |
 |-------|--------|
 | Status | Not started |
-| Issue | (issue: TBD-adr009-p8) |
+| Issue | (#201) |
 | Size | L (fetch + pin + scoring) |
 | Gate | **Gianluca** (CC BY-SA 4.0 data; publishing any number) |
 | Feature flag | none |
@@ -852,7 +850,7 @@ multimodal work (see [Critical path](#critical-path)).
 | Field | Value |
 |-------|--------|
 | Status | Unscheduled |
-| Issue | (issue: TBD-adr009-p9) |
+| Issue | (#202) |
 | Size | L |
 | Gate | **Gianluca** (separate ADR or explicit request; publishing judged scores) |
 | Feature flag | none (judge off by default even if the code exists) |
@@ -874,9 +872,9 @@ inside 0.3.0 or the first multimodal/benchmark sequences.
 
 | Key | Item | Why deferred | Gate if ever started |
 |-----|------|--------------|----------------------|
-| (issue: TBD-deferred-content-scan) | Content-level secret scanning (`index.secret_scan`) | ADR-010: path denylist first; skip vs redact + fixtures need their own ADR | Gianluca (new ADR) |
-| (issue: TBD-deferred-global-ignore) | `$RAGFS_CONFIG_DIR/ignore` | ADR-010: not in PR 2 | CoS merge after a dedicated PR |
-| (issue: TBD-deferred-lancedb-040) | Dedicated `lancedb` 0.40.0 / Lance 13 upgrade | ADR-011: not inside a multimodal PR; Blob V2 unused until we store blobs; re-check 0.38 `Error::Http` default-feature bug | Gianluca (breaking store dep) |
+| (#203) | Content-level secret scanning (`index.secret_scan`) | ADR-010: path denylist first; skip vs redact + fixtures need their own ADR | Gianluca (new ADR) |
+| (#204) | `$RAGFS_CONFIG_DIR/ignore` | ADR-010: not in PR 2 | CoS merge after a dedicated PR |
+| (#205) | Dedicated `lancedb` 0.40.0 / Lance 13 upgrade | ADR-011: not inside a multimodal PR; Blob V2 unused until we store blobs; re-check 0.38 `Error::Http` default-feature bug | Gianluca (breaking store dep) |
 | — | `embedding_weights_sha256` on the sidecar | ADR-010: first fingerprint is `(model_id, dimension)` only | CoS merge |
 | — | Metal opt-in, `ragfs compact`, HTTP `serve` with auth on by default | ADR-010: only on owner request and behind their own ADRs | Gianluca |
 | — | Default embedder switch to e5 / multilingual-e5 | Would break ADR-009 pins and existing indexes | Gianluca (reject unless a new ADR) |
