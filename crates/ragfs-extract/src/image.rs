@@ -6,6 +6,22 @@
 use crate::vision::ImageCaptioner;
 use async_trait::async_trait;
 use image::GenericImageView;
+use std::io::Cursor;
+
+/// Maximum decoded pixels accepted before captioning or embedding.
+pub const MAX_IMAGE_PIXELS: u64 = 40_000_000;
+
+/// Read dimensions without allocating a decoded bitmap.
+pub fn checked_dimensions(bytes: &[u8]) -> Result<(u32, u32), String> {
+    let reader = image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?;
+    let (width, height) = reader.into_dimensions().map_err(|e| e.to_string())?;
+    if u64::from(width) * u64::from(height) > MAX_IMAGE_PIXELS {
+        return Err(format!("Image exceeds {MAX_IMAGE_PIXELS} pixel budget"));
+    }
+    Ok((width, height))
+}
 use ragfs_core::{
     ContentElement, ContentExtractor, ContentMetadataInfo, ExtractError, ExtractedContent,
     ExtractedImage,
@@ -72,17 +88,16 @@ impl ContentExtractor for ImageExtractor {
         let bytes = tokio::fs::read(path).await?;
 
         // Decode image to get metadata (blocking operation)
-        let (width, height, format) =
-            tokio::task::spawn_blocking(move || decode_image_metadata(&bytes))
-                .await
-                .map_err(|e| ExtractError::Failed(format!("Task join error: {e}")))?
-                .map_err(|e| ExtractError::Failed(format!("Image decode failed: {e}")))?;
+        let (width, height, format, data) = tokio::task::spawn_blocking(move || {
+            let (width, height, format) = decode_image_metadata(&bytes)?;
+            Ok::<_, String>((width, height, format, bytes))
+        })
+        .await
+        .map_err(|e| ExtractError::Failed(format!("Task join error: {e}")))?
+        .map_err(|e| ExtractError::Failed(format!("Image decode failed: {e}")))?;
 
         // Get MIME type
         let mime_type = mime_type_from_extension(path);
-
-        // Read bytes again for storage (we consumed them in decoding)
-        let data = tokio::fs::read(path).await?;
 
         // Create text representation with metadata
         let text = format!(
@@ -141,6 +156,7 @@ impl ContentExtractor for ImageExtractor {
 
 /// Decode image to get dimensions and format.
 fn decode_image_metadata(bytes: &[u8]) -> Result<(u32, u32, String), String> {
+    checked_dimensions(bytes)?;
     let img = image::load_from_memory(bytes).map_err(|e| format!("Failed to load image: {e}"))?;
 
     let (width, height) = img.dimensions();
@@ -211,6 +227,26 @@ mod tests {
         let mut cursor = std::io::Cursor::new(&mut bytes);
         img.write_to(&mut cursor, image::ImageFormat::Jpeg).unwrap();
         bytes
+    }
+
+    #[test]
+    fn huge_png_header_is_rejected_before_decode() {
+        let mut png = create_test_png();
+        png[16..20].copy_from_slice(&100_000_u32.to_be_bytes());
+        png[20..24].copy_from_slice(&100_000_u32.to_be_bytes());
+        let mut crc = !0_u32;
+        for byte in &png[12..29] {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ (0xedb8_8320 & 0_u32.wrapping_sub(crc & 1));
+            }
+        }
+        png[29..33].copy_from_slice(&(!crc).to_be_bytes());
+        assert!(
+            decode_image_metadata(&png)
+                .unwrap_err()
+                .contains("pixel budget")
+        );
     }
 
     #[test]

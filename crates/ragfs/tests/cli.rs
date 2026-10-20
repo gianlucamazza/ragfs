@@ -719,3 +719,27 @@ fn chunk_floor_filters_before_embedding_and_is_recorded() {
     assert_eq!(status_json(&h)["total_files"], 0);
     assert_eq!(status_json(&h)["total_chunks"], 0);
 }
+
+#[test]
+fn image_metadata_is_searchable_without_vision() {
+    let h = Harness::new();
+    let png: &[u8] = &[
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 2,
+        0, 0, 0, 144, 119, 83, 222, 0, 0, 0, 12, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 0, 0,
+        3, 1, 1, 0, 201, 254, 146, 239, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+    ];
+    fs::write(h.source.join("lighthouse.png"), png).unwrap();
+    index_ok(h.ragfs().env("RAGFS_TEST_EMBEDDER", "unit"), &h.source);
+    h.ragfs()
+        .env("RAGFS_TEST_EMBEDDER", "unit")
+        .args([
+            "--format",
+            "json",
+            "query",
+            h.source.to_str().unwrap(),
+            "lighthouse",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1x1"));
+}

@@ -260,6 +260,10 @@ async fn create_components(
     Arc<ChunkerRegistry>,
     Arc<EmbedderPool>,
 )> {
+    #[cfg(not(feature = "vision"))]
+    if for_indexing && config.index.image_captioning {
+        anyhow::bail!("index.image_captioning requires a build with --features vision");
+    }
     let db_path = get_db_path(&source)?;
 
     // Embedder first: store width and sidecar model id come from it.
@@ -269,9 +273,9 @@ async fn create_components(
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let embedder_pool = if use_test_noop_embedder() {
-        info!("Using NoopEmbedder (RAGFS_TEST_EMBEDDER=noop)");
+        info!("Using test embedder selected by RAGFS_TEST_EMBEDDER");
         Arc::new(EmbedderPool::new(
-            Arc::new(NoopEmbedder::new()) as Arc<dyn Embedder>,
+            Arc::new(test_embedder()) as Arc<dyn Embedder>,
             config.embedder_pool_size(),
         ))
     } else {
@@ -305,6 +309,24 @@ async fn create_components(
     extractors.register("pdf", PdfExtractor::new());
     extractors.register("image", ImageExtractor::new());
     extractors.register("office", OfficeExtractor::new());
+    if for_indexing && config.index.image_captioning {
+        #[cfg(feature = "vision")]
+        {
+            use ragfs_extract::ImageCaptioner;
+            let captioner = Arc::new(ragfs_extract::BlipCaptioner::new(
+                data_dir()
+                    .context("Failed to get data directory")?
+                    .join("models"),
+            ));
+            captioner
+                .init()
+                .await
+                .context("Failed to initialize image captioner")?;
+            extractors.set_captioner(captioner);
+        }
+        #[cfg(not(feature = "vision"))]
+        anyhow::bail!("index.image_captioning requires a build with --features vision");
+    }
     let extractors = Arc::new(extractors);
 
     let mut chunkers = ChunkerRegistry::new();
@@ -332,11 +354,19 @@ async fn prepare_index_store(store: &LanceStore, config: &Config, force: bool) -
     Ok(())
 }
 
+fn test_embedder() -> NoopEmbedder {
+    if std::env::var("RAGFS_TEST_EMBEDDER").ok().as_deref() == Some("unit") {
+        NoopEmbedder::unit_for_tests()
+    } else {
+        NoopEmbedder::new()
+    }
+}
+
 fn use_test_noop_embedder() -> bool {
     cfg!(feature = "test-backends")
         && matches!(
             std::env::var("RAGFS_TEST_EMBEDDER").ok().as_deref(),
-            Some("noop")
+            Some("noop" | "unit")
         )
 }
 
@@ -839,7 +869,7 @@ async fn run(cli: Cli) -> Result<()> {
                 .join("models");
             // try_new does not download weights; dimension() is the SoT.
             let embedder: Box<dyn Embedder> = if use_test_noop_embedder() {
-                Box::new(NoopEmbedder::new())
+                Box::new(test_embedder())
             } else {
                 Box::new(
                     CandleEmbedder::try_new(cache_dir, model, false)

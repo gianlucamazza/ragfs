@@ -11,6 +11,7 @@ pub struct ExtractorRegistry {
     extractors: HashMap<String, Arc<dyn ContentExtractor>>,
     /// MIME type to extractor name mapping
     mime_mapping: HashMap<String, String>,
+    captioner: Option<Arc<dyn crate::ImageCaptioner>>,
 }
 
 impl ExtractorRegistry {
@@ -20,7 +21,13 @@ impl ExtractorRegistry {
         Self {
             extractors: HashMap::new(),
             mime_mapping: HashMap::new(),
+            captioner: None,
         }
+    }
+
+    /// Caption images from all extractors, including embedded PDF images.
+    pub fn set_captioner(&mut self, captioner: Arc<dyn crate::ImageCaptioner>) {
+        self.captioner = Some(captioner);
     }
 
     /// Register an extractor.
@@ -70,7 +77,23 @@ impl ExtractorRegistry {
             .get_for_file(path, mime_type)
             .ok_or_else(|| ExtractError::UnsupportedType(mime_type.to_string()))?;
 
-        extractor.extract(path).await
+        let mut content = extractor.extract(path).await?;
+        if let Some(captioner) = &self.captioner {
+            for image in &mut content.images {
+                if image.caption.is_some() {
+                    continue;
+                }
+                if let Err(error) = crate::image::checked_dimensions(&image.data) {
+                    tracing::warn!("Skipping caption for {:?}: {error}", path);
+                    continue;
+                }
+                match captioner.caption(&image.data).await {
+                    Ok(caption) => image.caption = caption,
+                    Err(error) => tracing::warn!("Caption failed for {:?}: {error}", path),
+                }
+            }
+        }
+        Ok(content)
     }
 }
 
@@ -189,5 +212,71 @@ mod tests {
     fn test_default_implementation() {
         let registry = ExtractorRegistry::default();
         assert!(registry.extractors.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod caption_tests {
+    use super::*;
+    use crate::{CaptionError, ImageCaptioner, PdfExtractor};
+    use lopdf::{Document, Object, Stream, dictionary};
+
+    struct CaptionStub;
+    #[async_trait::async_trait]
+    impl ImageCaptioner for CaptionStub {
+        async fn init(&self) -> Result<(), CaptionError> {
+            Ok(())
+        }
+        async fn caption(&self, _: &[u8]) -> Result<Option<String>, CaptionError> {
+            Ok(Some("A lighthouse".into()))
+        }
+        async fn is_initialized(&self) -> bool {
+            true
+        }
+        fn model_name(&self) -> &str {
+            "fixture"
+        }
+    }
+
+    #[tokio::test]
+    async fn embedded_pdf_jpeg_uses_the_shared_captioner() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("image.pdf");
+        let image = image::RgbImage::from_pixel(64, 64, image::Rgb([255, 0, 0]));
+        let mut jpeg = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut jpeg, image::ImageFormat::Jpeg).unwrap();
+        let mut doc = Document::with_version("1.5");
+        let pages = doc.new_object_id();
+        let image_id = doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject", "Subtype" => "Image", "Width" => 64, "Height" => 64,
+                "ColorSpace" => "DeviceRGB", "BitsPerComponent" => 8, "Filter" => "DCTDecode",
+            },
+            jpeg.into_inner(),
+        ));
+        let content = doc.add_object(Stream::new(
+            dictionary! {},
+            b"q 64 0 0 64 0 0 cm /Im0 Do Q".to_vec(),
+        ));
+        let page = doc.add_object(dictionary! {
+            "Type" => "Page", "Parent" => pages, "MediaBox" => vec![0.into(), 0.into(), 100.into(), 100.into()],
+            "Resources" => dictionary! { "XObject" => dictionary! { "Im0" => image_id } }, "Contents" => content,
+        });
+        doc.objects.insert(
+            pages,
+            Object::Dictionary(
+                dictionary! { "Type" => "Pages", "Kids" => vec![page.into()], "Count" => 1 },
+            ),
+        );
+        let catalog = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages });
+        doc.trailer.set("Root", catalog);
+        doc.save(&path).unwrap();
+        let mut registry = ExtractorRegistry::new();
+        registry.register("pdf", PdfExtractor::new());
+        registry.set_captioner(Arc::new(CaptionStub));
+        let content = registry.extract(&path, "application/pdf").await.unwrap();
+        assert_eq!(content.images.len(), 1);
+        assert_eq!(content.images[0].caption.as_deref(), Some("A lighthouse"));
+        assert_eq!(content.images[0].page, Some(1));
     }
 }
