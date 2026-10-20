@@ -10,6 +10,15 @@ This file tracks `ragfs-python` workspace versions. The crate is listed in
 on PyPI yet. Git tag `v0.2.0` is dated 2026-09-25 (the crate heading below
 keeps the earlier workspace date).
 
+## [0.2.3] - 2026-10-20
+
+
+### Miscellaneous
+
+- Updated the following local packages: ragfs-core, ragfs-chunker, ragfs-embed, ragfs-extract, ragfs-store, ragfs-index, ragfs-query, ragfs-fuse
+[0.2.3]: https://github.com/gianlucamazza/ragfs/compare/v0.2.2...v0.2.3
+
+
 ## [0.2.2] - 2026-10-19
 
 
