@@ -686,7 +686,12 @@ fn confirmed_missing(root: &Path, path: &Path) -> bool {
         match std::fs::symlink_metadata(&current) {
             Ok(metadata) if metadata.file_type().is_symlink() => return false,
             Ok(_) => {}
-            Err(error) => return error.kind() == std::io::ErrorKind::NotFound,
+            Err(error) => {
+                return matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                );
+            }
         }
     }
     false
@@ -2174,5 +2179,22 @@ mod tests {
         let config = IndexerConfig::default();
         assert!(config.should_process_path(Path::new("notes/keyboard.md")));
         assert!(!config.should_process_path(Path::new("notes/server.pem")));
+    }
+}
+
+#[cfg(test)]
+mod missing_parent_regression {
+    #[test]
+    fn file_replacing_directory_confirms_descendant_missing() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("parent"), "replacement").unwrap();
+        assert!(super::confirmed_missing(
+            root.path(),
+            &root.path().join("parent/old.txt")
+        ));
+        assert!(!super::confirmed_missing(
+            root.path(),
+            &root.path().join("parent")
+        ));
     }
 }
