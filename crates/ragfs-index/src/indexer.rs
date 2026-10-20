@@ -484,12 +484,34 @@ impl IndexerService {
         let pending = Arc::clone(&self.pending);
 
         // Walk directory in background thread (blocking I/O)
-        tokio::task::spawn_blocking(move || {
-            scan_directory(&root, &event_tx, &config, &pending);
+        let complete = tokio::task::spawn_blocking(move || {
+            scan_directory(&root, &event_tx, &config, &pending)
         })
         .await
         .map_err(|e| Error::Other(format!("scan task failed: {e}")))?;
 
+        self.reconcile_missing_files(complete).await
+    }
+
+    /// Remove only confirmed missing paths after a complete walk. Permission
+    /// errors, symlinks, paths outside the root, and unavailable roots preserve
+    /// index records. This is not a filesystem snapshot.
+    async fn reconcile_missing_files(&self, complete: bool) -> Result<()> {
+        if !complete {
+            warn!("Incomplete scan; preserving records for unvisited paths");
+            return Ok(());
+        }
+        for file in self.store.get_all_files().await.map_err(Error::Store)? {
+            if confirmed_missing(&self.root, &file.path) {
+                self.store
+                    .delete_by_file_path(&file.path)
+                    .await
+                    .map_err(Error::Store)?;
+                let _ = self
+                    .update_tx
+                    .send(IndexUpdate::FileRemoved { path: file.path });
+            }
+        }
         Ok(())
     }
 
@@ -639,11 +661,35 @@ fn scan_directory(
     event_tx: &mpsc::Sender<FileEvent>,
     config: &IndexerConfig,
     pending: &AtomicUsize,
-) {
+) -> bool {
     let matcher = config.matcher(root);
-    for path in matcher.collect_files() {
+    let (files, complete) = matcher.collect_files_with_status();
+    for path in files {
         queue_event_blocking(event_tx, pending, FileEvent::Created(path));
     }
+    complete
+}
+
+fn confirmed_missing(root: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(root) else {
+        return false;
+    };
+    if !std::fs::symlink_metadata(root).is_ok_and(|m| m.is_dir()) {
+        return false;
+    }
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        if !matches!(component, std::path::Component::Normal(_)) {
+            return false;
+        }
+        current.push(component);
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => return false,
+            Ok(_) => {}
+            Err(error) => return error.kind() == std::io::ErrorKind::NotFound,
+        }
+    }
+    false
 }
 
 fn queue_event_blocking(
@@ -1898,6 +1944,80 @@ mod tests {
         };
         store.upsert_file(&record).await.unwrap();
         store.upsert_chunks(&[chunk]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reconcile_removes_missing_but_preserves_existing_and_external() {
+        let root = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let missing = root.path().join("removed.txt");
+        let present = root.path().join("present.txt");
+        let external = outside.path().join("external.txt");
+        std::fs::write(&present, "still here").unwrap();
+        let store = Arc::new(MockStore::new());
+        for path in [&missing, &present, &external] {
+            seed_file(&store, path, "indexed text").await;
+        }
+        let indexer = create_test_indexer(store.clone(), root.path());
+        indexer.reconcile_missing_files(false).await.unwrap();
+        assert!(store.get_file(&missing).await.unwrap().is_some());
+        indexer.reconcile_missing_files(true).await.unwrap();
+        assert!(store.get_file(&missing).await.unwrap().is_none());
+        assert!(
+            store
+                .get_chunks_for_file(&missing)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(store.get_file(&present).await.unwrap().is_some());
+        assert!(store.get_file(&external).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn reconcile_preserves_records_when_root_is_unavailable() {
+        let parent = tempdir().unwrap();
+        let root = parent.path().join("unavailable");
+        let path = root.join("file.txt");
+        let store = Arc::new(MockStore::new());
+        seed_file(&store, &path, "indexed text").await;
+        create_test_indexer(store.clone(), &root)
+            .reconcile_missing_files(true)
+            .await
+            .unwrap();
+        assert!(store.get_file(&path).await.unwrap().is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reconcile_does_not_follow_symlink_ancestors() {
+        let root = tempdir().unwrap();
+        let external = tempdir().unwrap();
+        std::os::unix::fs::symlink(external.path(), root.path().join("link")).unwrap();
+        assert!(!confirmed_missing(
+            root.path(),
+            &root.path().join("link/missing.txt")
+        ));
+        assert!(!confirmed_missing(
+            root.path(),
+            &root.path().join("../missing.txt")
+        ));
+    }
+
+    #[tokio::test]
+    async fn reconcile_propagates_store_failure() {
+        let root = tempdir().unwrap();
+        let store = Arc::new(MockStore {
+            fail_delete: true,
+            ..MockStore::new()
+        });
+        seed_file(&store, &root.path().join("missing.txt"), "indexed text").await;
+        assert!(
+            create_test_indexer(store, root.path())
+                .reconcile_missing_files(true)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

@@ -802,6 +802,7 @@ impl RagfsSemanticManager {
         let model_path = self.model_path.clone();
         let source_path = self.source_path.clone();
         let config = self.config.clone();
+        let safety_data_dir = self.db_path.clone();
 
         future_into_py(py, async move {
             // Initialize embedder
@@ -828,9 +829,13 @@ impl RagfsSemanticManager {
 
             let store_arc: Arc<dyn VectorStore> = store;
 
-            // Create semantic manager
-            let semantic_manager =
-                SemanticManager::new(source_path, Some(store_arc), Some(embedder), Some(config));
+            let semantic_manager = SemanticManager::with_safety(
+                source_path,
+                Some(store_arc),
+                Some(embedder),
+                Some(config),
+                safety_data_dir,
+            );
 
             *manager_lock.write().await = Some(semantic_manager);
 

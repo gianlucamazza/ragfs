@@ -567,11 +567,12 @@ Get full details of a plan including all proposed actions.
 
 ### ragfs_approve_plan
 
-Intended to approve and execute a pending plan. **This tool currently fails closed and does not execute plan actions.**
-
-`RagfsSemanticManager.init` constructs the FUSE `SemanticManager` without an `OpsManager` (`ops_manager: None`). `approve_plan` then returns `OpsManager not configured - cannot execute plan actions`. The MCP tool maps that to a client error. No files are moved or deleted.
-
-The tool is still write-gated (`RAGFS_MCP_ALLOW_WRITES=1`) and path-jailed. Propose / list / get / reject work. Wiring an `OpsManager` later must reuse those same server-side gates; do not treat this fail-closed path as a security control.
+Approves and executes a pending plan through a jailed `OpsManager` with an enabled
+`SafetyManager`. Safety data uses the same index database path as MCP trash,
+history and undo tools. Every mutation still requires `RAGFS_MCP_ALLOW_WRITES=1`
+and the source-root allowlist. Actions run sequentially and stop at the first
+failure; a failed plan may have already executed earlier actions. Review history
+and undo those actions explicitly; plan execution is not an atomic batch.
 
 **Parameters:**
 | Parameter | Type | Default | Description |
@@ -579,7 +580,7 @@ The tool is still write-gated (`RAGFS_MCP_ALLOW_WRITES=1`) and path-jailed. Prop
 | `plan_id` | string | required | The plan ID to approve |
 | `index` | string | source path | Source directory or 16-hex id |
 
-**Response (current):**
+**Error response:**
 ```json
 {
   "error": "Internal error",

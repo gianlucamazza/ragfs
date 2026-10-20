@@ -188,6 +188,13 @@ impl ExclusionMatcher {
     /// global gitignore) are applied here. Include globs are applied after.
     #[must_use]
     pub fn collect_files(&self) -> Vec<PathBuf> {
+        self.collect_files_with_status().0
+    }
+
+    /// Return eligible files and whether every visited entry was readable.
+    /// An incomplete walk must never be used to infer deletions.
+    pub fn collect_files_with_status(&self) -> (Vec<PathBuf>, bool) {
+        let mut complete = true;
         let mut builder = WalkBuilder::new(&self.root);
         let matcher = self.clone();
         builder
@@ -195,11 +202,12 @@ impl ExclusionMatcher {
             .follow_links(false)
             .filter_entry(move |entry| entry.depth() == 0 || !matcher.is_excluded(entry.path()));
 
-        builder
+        let files = builder
             .build()
             .filter_map(|entry| match entry {
                 Ok(entry) => Some(entry),
                 Err(error) => {
+                    complete = false;
                     warn!("Cannot read index entry: {error}");
                     None
                 }
@@ -207,7 +215,8 @@ impl ExclusionMatcher {
             .filter(|entry| entry.file_type().is_some_and(|kind| kind.is_file()))
             .map(ignore::DirEntry::into_path)
             .filter(|path| matches_include(&self.options.include_patterns, path))
-            .collect()
+            .collect();
+        (files, complete)
     }
 
     fn is_hidden_under_root(&self, path: &Path) -> bool {
