@@ -732,11 +732,11 @@ fn image_metadata_is_searchable_without_vision() {
     index_ok(&mut h.ragfs(), &h.source);
     h.ragfs()
         .args([
+            "--format",
+            "json",
             "query",
             h.source.to_str().unwrap(),
             "lighthouse",
-            "--format",
-            "json",
         ])
         .assert()
         .success()
