@@ -13,7 +13,7 @@
 //!
 //! Hidden/secret path exclusion is adapted from [sophie4869/ragfs](https://github.com/sophie4869/ragfs)
 //! onto the `ignore` crate (`WalkBuilder` + `OverrideBuilder`) as specified
-//! by ADR-010. `.ragfsignore` is a later PR.
+//! by ADR-010. Nested `.ragfsignore` files are supported under the index root.
 
 use ignore::WalkBuilder;
 use ignore::gitignore::Gitignore;
@@ -146,8 +146,20 @@ impl ExclusionMatcher {
         if !self.options.include_hidden && self.is_hidden_under_root(path) {
             return true;
         }
-        if override_ignores(&self.overrides, path) {
+        let Ok(relative) = path.strip_prefix(&self.root) else {
             return true;
+        };
+        let mut candidate = self.root.clone();
+        let components: Vec<_> = relative.components().collect();
+        for (index, component) in components.iter().enumerate() {
+            candidate.push(component.as_os_str());
+            if override_ignores(
+                &self.overrides,
+                &candidate,
+                index + 1 < components.len() || path.is_dir(),
+            ) {
+                return true;
+            }
         }
         self.options.honor_gitignore && gitignore_excludes(&self.root, path)
     }
@@ -245,8 +257,7 @@ fn add_ignore_override(builder: &mut OverrideBuilder, pattern: &str) {
     }
 }
 
-fn override_ignores(overrides: &Override, path: &Path) -> bool {
-    let is_dir = path.is_dir();
+fn override_ignores(overrides: &Override, path: &Path, is_dir: bool) -> bool {
     overrides.matched(path, is_dir).is_ignore()
         || overrides
             .matched(path_for_override(path), is_dir)
@@ -662,5 +673,50 @@ mod tests {
         fs::remove_file(root.join(".ignore")).unwrap();
         fs::remove_file(root.join(".ragfsignore")).unwrap();
         assert!(matcher.should_process(&root.join("sub/keep.md")));
+    }
+    #[test]
+    fn unreadable_walk_entry_emits_warning() {
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+        #[derive(Clone)]
+        struct Capture(Arc<Mutex<Vec<u8>>>);
+        impl Write for Capture {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let capture = Capture(bytes.clone());
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || capture.clone())
+            .finish();
+        let temp = tempdir().unwrap();
+        // A missing entry is deterministic even when tests run as root.
+        let matcher = matcher_at(&temp.path().join("missing"));
+        tracing::subscriber::with_default(subscriber, || {
+            assert!(matcher.collect_files().is_empty());
+        });
+        let log = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(log.contains("Cannot read index entry"), "{log}");
+    }
+    #[test]
+    fn directory_override_also_excludes_direct_child_events() {
+        let temp = tempdir().unwrap();
+        write(temp.path(), "cache/note.md", "cached");
+        let matcher = ExclusionMatcher::new(
+            temp.path(),
+            ExclusionOptions {
+                extra_excludes: vec!["cache/".into()],
+                ..ExclusionOptions::default()
+            },
+        );
+        assert!(matcher.is_excluded(&temp.path().join("cache/note.md")));
+        assert!(matcher.collect_files().is_empty());
     }
 }
