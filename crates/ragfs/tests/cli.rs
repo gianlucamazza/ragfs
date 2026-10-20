@@ -712,5 +712,10 @@ fn chunk_floor_filters_before_embedding_and_is_recorded() {
     let output = query_json(&h, "中文啊");
     assert_eq!(output["min_alnum_chars"], 3);
     assert!(!output.to_string().contains("punctuation.md"));
-    assert!(output.to_string().contains("cjk.md"));
+    // NoopEmbedder emits zero vectors: assert persistence, not cosine ranking.
+    assert_eq!(status_json(&h)["total_chunks"], 1);
+    h.write_config("[query]\nhybrid = false\n[chunking]\nmin_alnum_chars = 4\n");
+    index_ok(&mut h.ragfs(), &h.source);
+    assert_eq!(status_json(&h)["total_files"], 0);
+    assert_eq!(status_json(&h)["total_chunks"], 0);
 }
