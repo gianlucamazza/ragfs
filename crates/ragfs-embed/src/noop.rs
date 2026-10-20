@@ -35,6 +35,7 @@ use ragfs_core::{EmbedError, Embedder, EmbeddingConfig, EmbeddingOutput, Modalit
 /// ```
 pub struct NoopEmbedder {
     dimension: usize,
+    unit_vector: bool,
     modalities: Vec<Modality>,
 }
 
@@ -44,7 +45,18 @@ impl NoopEmbedder {
     pub fn new() -> Self {
         Self {
             dimension: 384,
+            unit_vector: false,
             modalities: vec![Modality::Text],
+        }
+    }
+
+    /// Constant unit vector for integration tests requiring defined cosine distance.
+    /// This is not a semantic embedding model and must never be benchmarked.
+    #[must_use]
+    pub fn unit_for_tests() -> Self {
+        Self {
+            unit_vector: true,
+            ..Self::new()
         }
     }
 
@@ -53,6 +65,7 @@ impl NoopEmbedder {
     pub fn with_dimension(dimension: usize) -> Self {
         Self {
             dimension,
+            unit_vector: false,
             modalities: vec![Modality::Text],
         }
     }
@@ -67,7 +80,11 @@ impl Default for NoopEmbedder {
 #[async_trait]
 impl Embedder for NoopEmbedder {
     fn model_name(&self) -> &str {
-        "noop"
+        if self.unit_vector {
+            "test-unit"
+        } else {
+            "noop"
+        }
     }
 
     fn dimension(&self) -> usize {
@@ -90,7 +107,13 @@ impl Embedder for NoopEmbedder {
         Ok(texts
             .iter()
             .map(|_| EmbeddingOutput {
-                embedding: vec![0.0; self.dimension],
+                embedding: {
+                    let mut vector = vec![0.0; self.dimension];
+                    if self.unit_vector {
+                        vector[0] = 1.0;
+                    }
+                    vector
+                },
                 token_count: 0,
             })
             .collect())
@@ -100,6 +123,17 @@ impl Embedder for NoopEmbedder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn unit_test_vectors_have_defined_cosine_norm() {
+        let embedder = NoopEmbedder::unit_for_tests();
+        let output = embedder
+            .embed_text(&["caption"], &EmbeddingConfig::default())
+            .await
+            .unwrap();
+        assert_eq!(embedder.model_name(), "test-unit");
+        assert_eq!(output[0].embedding.iter().map(|v| v * v).sum::<f32>(), 1.0);
+    }
 
     #[test]
     fn test_noop_new() {
