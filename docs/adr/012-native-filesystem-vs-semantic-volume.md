@@ -10,12 +10,24 @@ implement code, change Cargo or Python packages, update
 
 ### Status
 
-Proposed (HOLD) — owner decision required. Do not implement. Do not
-schedule against 0.3.0.
+Accepted (2026-10-20, decided by Chief of Staff under Gianluca's
+delegation).
 
 Verified against `main` @ `3e16a5c0c4923cfa764642a443c153d33ac2db3d`
 (docs: completion plan for accepted ADRs, #178) unless a citation
 names another commit or an open PR.
+
+### Decision
+
+1. **Native block-device filesystem: REJECTED.** No `mkfs.ragfs`
+   superblock, no ragfs allocator, no `mount -t ragfs` kernel type,
+   no kernel driver track.
+2. **Current model stays.** The host filesystem is canonical;
+   Lance embeddings and chunk text are derived and rebuildable;
+   FUSE remains passthrough plus virtual `.ragfs/` (ADR-004).
+3. **`ragfs volume` (manifest + `init` / `check` / `repair` /
+   `upgrade`): DEFERRED** until after the **0.3.0** release. It
+   then gets its **own ADR**. It never touches #179–#185.
 
 ### Context
 
@@ -48,8 +60,9 @@ Accepted ADRs that bind this evaluation:
   Schema v3 is phase 2 (#188).
 
 `docs/ROADMAP.md` is the completion plan for work already accepted
-on `main`. This ADR must not delay the ADR-010 security sequence
-(#179–#185) or the 0.3.0 release PR (#186).
+on `main`. This ADR does not delay the ADR-010 security sequence
+(#179–#185) or the 0.3.0 release PR (#186). Volume work is
+deferred until after that release and needs its own ADR then.
 
 ---
 
@@ -428,10 +441,11 @@ not a substitute for Lance.
 | Fits ADR-008/010/011 | Additive sidecar / schema | New stack |
 | User-visible win | `check` / `upgrade`; movable index; honest pins | None that FUSE+Lance lack |
 
-The volume is the **only** option in this ADR that could
-deserve a later implementation PR, and only after 0.3.0, and
-only if the owner wants the CLI. Status quo already answers
-the ChatGPT product question.
+The volume is the only option in this evaluation that could
+deserve a later implementation ADR — **after** the 0.3.0
+release, never on #179–#185. Status quo already answers the
+ChatGPT product question. The volume CLI is deferred; this
+record does not authorize it.
 
 ---
 
@@ -447,12 +461,11 @@ closing, or pin a fingerprint ADR-010 has not written.
 progress** as #206) → #180–#185 (can overlap after #179) →
 #186 (Gianluca, 0.3.0) → ADR-011 code. ADR-009 waits on
 0.3.0 / #181 before claiming an honest embedding fingerprint
-in results. This ADR adds **zero** boxes to that graph until
-the owner takes it off HOLD.
+in results. This ADR adds **zero** boxes to that graph.
 
-If later accepted, place volume work **after 0.3.0**, as an
-unscheduled / post-0.3.0 item the owner adds to the completion
-plan. Do not fold it into #179–#186.
+Volume work is **deferred until after the 0.3.0 release** and
+then needs its **own ADR**. It **never touches #179–#185**.
+Do not fold it into #179–#186.
 
 **Interaction with ADR-011 schema v3 (#188):**
 
@@ -480,33 +493,33 @@ ADR-009 does not need a volume. If a volume exists later, the
 harness adapter records the same sidecar fingerprint #181
 already requires.
 
-This ADR does **not** update `docs/ROADMAP.md`. The owner
-decides first.
+This ADR does **not** update `docs/ROADMAP.md`. A later volume
+ADR, if any, is what the completion plan would cite.
 
 ---
 
-## 5. Recommendation and smallest ADR scope
+## 5. Recorded decision and deferred volume scope
 
-### Proposed decision (HOLD)
+The Decision at the top of this record is binding. Restated:
 
-1. **Reject** a native block-device filesystem: no
+1. **Native block-device filesystem: REJECTED.** No
    `mkfs.ragfs` superblock, no ragfs allocator, no
    `mount -t ragfs` kernel type, no kernel driver track.
-2. **Keep** the current model: host filesystem is canonical;
-   Lance embeddings and chunk text are derived; FUSE is
-   passthrough + virtual `.ragfs/` (ADR-004); CLI and MCP
-   remain first-class without mount (ADR-010 #185).
-3. **Optionally accept later** (separate implementation ADR or
-   a status change of *this* record) the **smallest volume
-   scope** below — after 0.3.0, and only if Gianluca wants
-   `volume check` / movable pins. Until then, **do nothing**.
+2. **Current model stays.** Host filesystem is canonical;
+   Lance embeddings and chunk text are derived and
+   rebuildable; FUSE is passthrough + virtual `.ragfs/`
+   (ADR-004); CLI and MCP remain first-class without mount
+   (ADR-010 #185).
+3. **`ragfs volume` (manifest + `init` / `check` / `repair` /
+   `upgrade`): DEFERRED** until after the 0.3.0 release, then
+   its **own ADR**. It **never touches #179–#185**.
 
 ChatGPT’s useful residue — “embeddings are derived” and
 “should relations be primitives?” — is already true and is
 best extended at the **volume/metadata** layer, not the block
-layer.
+layer, if a later ADR takes that up.
 
-### Smallest scope if the owner later says yes
+### Deferred volume scope (own ADR after 0.3.0; not authorized here)
 
 **In**
 
@@ -535,27 +548,24 @@ layer.
 - Changing default embedder, Lance pin, or FUSE default.
 - Content-level secret scanning (#203), global ignore file
   (#204), `lancedb` 0.40 / Lance 13 (#205).
-- Any work in the 0.3.0 window (#179–#186).
+- Any work in the 0.3.0 window (#179–#186). Volume work
+  **never touches #179–#185**.
 - Benchmark numbers (ADR-009).
 
-### Decision points for Gianluca
+### Resolved decisions
 
-1. **Reject native FS?** This draft says yes. Confirm or
-   reopen with a user who needs ragfs to own blocks.
-2. **Volume now, later, or never?** Never = close this ADR as
-   Rejected (native) + Accepted (stay on host FS + Lance) and
-   leave the sidecar as-is. Later = keep HOLD until 0.3.0 is
-   tagged, then a small implementation PR. Now = **not
-   offered**; it fights #179–#185.
-3. **Manifest vs grow `ragfs-schema.json`?** Growing the
-   sidecar is less user-facing API. A new filename is clearer
-   for `volume check`. Owner picks; both stay additive JSON.
-4. **Optional loop image** as a documented recipe (`dd` +
-   `mkfs.ext4` + `ragfs index`) vs a `ragfs volume init
-   --image` wrapper. Recipe needs no code.
-5. **Whether `volume check` is in scope for 0.4.x** or stays
-   unscheduled (same bucket as Metal, `ragfs compact`, HTTP
-   `serve` in ADR-010 deferred list).
+1. **Native FS: REJECTED** (2026-10-20, Chief of Staff under
+   Gianluca's delegation).
+2. **Current model stays** (host FS canonical; Lance
+   derived/rebuildable).
+3. **Volume: DEFERRED** until after the 0.3.0 release; it
+   gets its own ADR then. Not in this sequence. Never
+   #179–#185.
+4. **Manifest vs grow `ragfs-schema.json`**, optional loop
+   image, and whether `volume check` is in 0.4.x vs
+   unscheduled: **left to that later ADR**. A host-tool
+   recipe (`dd` + `mkfs.ext4` + `ragfs index`) needs no
+   ragfs code and is not a `mkfs.ragfs`.
 
 ---
 
@@ -572,7 +582,7 @@ layer.
 | Crash loses | Index rows / sidecar | Same, plus a check to see it | Documents |
 | macOS / Windows | CLI/MCP; mount experimental / absent | Same | Linux `mount -t` first; other OS drivers not proposed |
 | Kernel licence | N/A (userspace MIT/Apache-2.0) | N/A | GPL-2.0 in-tree |
-| 0.3.0 impact | In progress (#206 / #179) | None if HOLD | Would stall 0.3.0 |
+| 0.3.0 impact | In progress (#206 / #179) | Deferred; never #179–#185 | Rejected |
 | Schema v3 (#188) | Planned after 0.3.0 | `upgrade` wraps it | Unrelated new format |
 | Honest fit | Product as designed (ADR-004/002) | Integrity UX | Teaching-FS / research OS |
 
@@ -697,9 +707,9 @@ second one.
 
 | Alternative | Disposition |
 |-------------|-------------|
-| Native block FS + later kernel driver (ChatGPT 7 phases) | **Reject.** Wrong failure domain; years-class FS work; conflicts with MIT/Apache userspace and 0.3.0. |
-| Status quo only (no volume CLI) | **Default while HOLD.** Already matches Gifford/HAC + Lance. Owner may stop here. |
-| Smallest volume (manifest + `init/check/repair/upgrade`) | **Optional, after 0.3.0**, if owner wants checkable pins. No block device. |
+| Native block FS + later kernel driver (ChatGPT 7 phases) | **Rejected.** Wrong failure domain; years-class FS work; conflicts with MIT/Apache userspace and 0.3.0. |
+| Status quo (host FS canonical, Lance derived/rebuildable) | **Accepted.** Current model stays. |
+| Smallest volume (manifest + `init/check/repair/upgrade`) | **Deferred** until after the 0.3.0 release; own ADR then. Never #179–#185. No block device. |
 | Documents and relations as block-level inode types | **Reject.** Duplicates host FS + Lance. Relations belong in tables/JSON. |
 | Store canonical files inside Lance | **Reject.** ADR-011 already forbids raw media bytes in v1; text files would lose ordinary editors unless FUSE re-exports them. |
 | xattrs-only index | **Reject** as primary store. Size and query limits; keep xattrs optional later. |
