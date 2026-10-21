@@ -79,8 +79,8 @@ struct Cli {
     #[arg(short, long)]
     verbose: bool,
 
-    /// Output format (text, json)
-    #[arg(short, long, default_value = "text")]
+    /// Output format (text, json). Long-only so `-f` stays `--force` / `--foreground`.
+    #[arg(long, global = true, default_value = "text")]
     format: OutputFormat,
 
     #[command(subcommand)]
@@ -383,6 +383,7 @@ fn setup_logging(verbose: bool) -> Result<()> {
     let level = if verbose { Level::DEBUG } else { Level::INFO };
     let subscriber = FmtSubscriber::builder()
         .with_max_level(level)
+        .with_writer(std::io::stderr)
         .with_target(false)
         .finish();
     tracing::subscriber::set_global_default(subscriber).context("Failed to set tracing subscriber")
@@ -946,6 +947,37 @@ fn truncate(s: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod save_receipt_flag {
     use super::*;
+
+    #[test]
+    fn output_format_accepts_documented_subcommand_position() {
+        let cli = Cli::try_parse_from(["ragfs", "query", "/tmp", "q", "--format", "json"]).unwrap();
+        assert!(matches!(cli.format, OutputFormat::Json));
+        let cli = Cli::try_parse_from(["ragfs", "--format", "json", "status", "/tmp"]).unwrap();
+        assert!(matches!(cli.format, OutputFormat::Json));
+    }
+
+    #[test]
+    fn index_and_mount_keep_short_f_and_do_not_collide_with_format() {
+        let cli = Cli::try_parse_from(["ragfs", "index", "-f", "/tmp"]).unwrap();
+        match cli.command {
+            Commands::Index { force, .. } => assert!(force),
+            _ => panic!("expected index"),
+        }
+        assert!(matches!(cli.format, OutputFormat::Text));
+
+        let cli = Cli::try_parse_from(["ragfs", "index", "/tmp", "--format", "json"]).unwrap();
+        match cli.command {
+            Commands::Index { force, .. } => assert!(!force),
+            _ => panic!("expected index"),
+        }
+        assert!(matches!(cli.format, OutputFormat::Json));
+
+        let cli = Cli::try_parse_from(["ragfs", "mount", "-f", "/tmp", "/mnt"]).unwrap();
+        match cli.command {
+            Commands::Mount { foreground, .. } => assert!(foreground),
+            _ => panic!("expected mount"),
+        }
+    }
 
     #[test]
     fn absent_flag_is_none() {

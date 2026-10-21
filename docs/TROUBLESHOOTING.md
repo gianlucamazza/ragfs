@@ -462,7 +462,7 @@ ls -la ~/.local/share/ragfs/indices/
 du -sh ~/.local/share/ragfs/indices/*
 
 # View index status
-ragfs status ~/your-directory -f json | jq .
+ragfs status ~/your-directory --format json | jq .
 ```
 
 ### Test Individual Components
@@ -506,7 +506,7 @@ ragfs index ~/your-directory --force
 
 To find the index hash:
 ```bash
-ragfs status ~/your-directory -f json | jq .index_path
+ragfs status ~/your-directory --format json | jq .index_path
 ```
 
 ### Recover from Trash
@@ -583,7 +583,7 @@ rustc --version
 ragfs --version
 
 # Index status
-ragfs status ~/your-directory -f json
+ragfs status ~/your-directory --format json
 
 # Recent errors
 tail -50 ~/.cache/ragfs/logs/ragfs.log

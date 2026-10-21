@@ -1,0 +1,296 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gianlucamazza.github.io/ragfs/benchmarks/results.schema.json",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "protocol_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "protocol_sha256": {
+      "type": "string",
+      "minLength": 1
+    },
+    "git_sha": {
+      "type": "string",
+      "minLength": 1
+    },
+    "git_dirty": {
+      "type": "boolean"
+    },
+    "timestamp_utc": {
+      "type": "string",
+      "minLength": 1
+    },
+    "environment": {
+      "type": "object"
+    },
+    "pins": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uri": {
+            "type": "string",
+            "minLength": 1
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "license": {
+            "type": "string",
+            "minLength": 1
+          },
+          "revision": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40,64}$"
+          },
+          "git_commit": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40,64}$"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "name",
+          "uri",
+          "path",
+          "license",
+          "sha256"
+        ],
+        "anyOf": [
+          {
+            "required": [
+              "git_commit"
+            ]
+          },
+          {
+            "required": [
+              "revision"
+            ]
+          }
+        ]
+      }
+    },
+    "systems": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "judge": {
+      "type": "null"
+    },
+    "metrics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "system": {
+            "type": "string",
+            "minLength": 1
+          },
+          "dataset": {
+            "type": "string",
+            "minLength": 1
+          },
+          "split": {
+            "type": "string",
+            "minLength": 1
+          },
+          "ability": {
+            "type": "string",
+            "minLength": 1
+          },
+          "n_items": {
+            "oneOf": [
+              {
+                "type": "number",
+                "minimum": 0
+              },
+              {
+                "const": "TBD (to be measured)"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "n_items_retrieval": {
+            "oneOf": [
+              {
+                "type": "number",
+                "minimum": 0
+              },
+              {
+                "const": "TBD (to be measured)"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "exact_match_strict": {
+            "oneOf": [
+              {
+                "type": "number",
+                "minimum": 0
+              },
+              {
+                "const": "TBD (to be measured)"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "exact_match_lenient": {
+            "oneOf": [
+              {
+                "type": "number",
+                "minimum": 0
+              },
+              {
+                "const": "TBD (to be measured)"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "token_f1_strict": {
+            "oneOf": [
+              {
+                "type": "number",
+                "minimum": 0
+              },
+              {
+                "const": "TBD (to be measured)"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "token_f1_lenient": {
+            "oneOf": [
+              {
+                "type": "number",
+                "minimum": 0
+              },
+              {
+                "const": "TBD (to be measured)"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recall_at_k_any": {
+            "oneOf": [
+              {
+                "type": "number",
+                "minimum": 0
+              },
+              {
+                "const": "TBD (to be measured)"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recall_at_k_all": {
+            "oneOf": [
+              {
+                "type": "number",
+                "minimum": 0
+              },
+              {
+                "const": "TBD (to be measured)"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recall_at_k_frac": {
+            "oneOf": [
+              {
+                "type": "number",
+                "minimum": 0
+              },
+              {
+                "const": "TBD (to be measured)"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "latency_s_per_query": {
+            "oneOf": [
+              {
+                "type": "number",
+                "minimum": 0
+              },
+              {
+                "const": "TBD (to be measured)"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cost_usd_per_query": {
+            "oneOf": [
+              {
+                "type": "number",
+                "minimum": 0
+              },
+              {
+                "const": "TBD (to be measured)"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "system",
+          "dataset",
+          "split",
+          "ability",
+          "n_items",
+          "n_items_retrieval"
+        ]
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "protocol_id",
+    "protocol_sha256",
+    "git_sha",
+    "git_dirty",
+    "timestamp_utc",
+    "environment",
+    "pins",
+    "systems",
+    "judge",
+    "metrics"
+  ]
+}

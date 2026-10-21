@@ -1,0 +1,47 @@
+{
+  "steps": [
+    {
+      "id": 1,
+      "operation": "ingest",
+      "revisions": [
+        "employer-r1"
+      ]
+    },
+    {
+      "id": 2,
+      "operation": "query",
+      "query": "initial"
+    },
+    {
+      "id": 3,
+      "operation": "ingest",
+      "revisions": [
+        "employer-r1",
+        "employer-r2"
+      ]
+    },
+    {
+      "id": 4,
+      "operation": "query",
+      "query": "updated"
+    },
+    {
+      "id": 5,
+      "operation": "query",
+      "query": "historical"
+    },
+    {
+      "id": 6,
+      "operation": "query",
+      "query": "unknown"
+    },
+    {
+      "id": 7,
+      "operation": "assert_revision_and_receipts"
+    },
+    {
+      "id": 8,
+      "operation": "assert_current_and_historical_evidence"
+    }
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gianlucamazza.github.io/ragfs/benchmarks/protocol.schema.json",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "protocol_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "dataset": {
+      "const": "versioned-facts-v0"
+    },
+    "pins": {
+      "type": "string",
+      "minLength": 1
+    },
+    "seed": {
+      "type": "integer"
+    },
+    "systems": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "bm25",
+          "vector",
+          "ragfs"
+        ]
+      }
+    },
+    "query": {
+      "type": "object",
+      "properties": {
+        "k": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "hybrid": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "k"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "protocol_id",
+    "dataset",
+    "pins",
+    "seed",
+    "systems",
+    "query"
+  ]
+}
