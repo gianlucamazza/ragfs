@@ -53,13 +53,15 @@ Mark these done so the plan does not re-open them.
 | Item | Status | Evidence on `main` |
 |------|--------|--------------------|
 | ADR-001…007 (Candle, LanceDB, propose-review-apply, FUSE, registries, Blake3, Tokio) | Done | Implemented product path |
-| ADR-008 index revision sidecar + opt-in query receipts | Done | `#162` / `e78f01b`; `CHUNKS_SCHEMA_VERSION` stays 2 |
+| ADR-008 index revision sidecar + opt-in query receipts | Done | `#162` / `e78f01b`; `CHUNKS_SCHEMA_VERSION` is 3 since #216 |
 | v0.2.2 release | Done | `#163`, code `bcb1611` |
 | MCP hardening in 0.2.2 (allowlisted roots, opt-in writes, caps, annotations, error codes, stderr audit, stdio-only docs) | Done | `#166`–`#172` |
 | Directory-scoped search (SemPOSIX idea, already on `main`) | Done | `#60`; ADR-010 does not re-port it |
 | ADR-009 Accepted (design only; harness not implemented) | Done (phase 0) | `#165` / `57037b3` |
 | ADR-010 Accepted (design only) | Done (ADR PR) | `#175` / `e310209c` |
 | ADR-011 Accepted (design only) | Done (phase 0) | `#177` / `0ef60e0b` |
+| ADR-011 phase 1 image caption indexing | Done | `#215` / `1fd6c6a` (merged 2026-10-20) |
+| ADR-011 phase 2 schema v3 | Done | `#216` / `c3eb48cf` (merged 2026-10-20); migration on open |
 
 The generated 0.2.3 PRs #176, #209 and #212 are closed as superseded.
 **0.3.0 shipped** in #208 at `23260656`, including #206 and #207.
@@ -356,7 +358,7 @@ Captions into the existing text table (ADR-011 phase 1).
 
 | Field | Value |
 |-------|--------|
-| Status | Implemented — image caption indexing PR; merge and CI pending |
+| Status | Done — #215, `1fd6c6a` (merged 2026-10-20) |
 | Issue | (#187) |
 | Size | M (~300–600 LOC) |
 | Gate | CoS merge; **Gianluca** if this PR grows `full` or adds a new model download beyond the existing BLIP pin |
@@ -396,7 +398,7 @@ summary skipped this phase; the ADR includes it, so it is in the plan.
 
 | Field | Value |
 |-------|--------|
-| Status | Implemented; migration and full CI validation pending |
+| Status | Done — #216, `c3eb48cf` (merged 2026-10-20); schema v3 migration on open |
 | Issue | (#188) |
 | Size | M (~250–500 LOC) |
 | Gate | CoS merge |
