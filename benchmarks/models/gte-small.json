@@ -1,0 +1,18 @@
+{
+  "model": "thenlper/gte-small",
+  "revision": "17e1f347d17fe144873b1201da91788898c639cd",
+  "files": {
+    "config.json": {
+      "path": "config.json",
+      "sha256": "00273cdfb3e05c7304d180270bdef8adae45023e7bdfc396338bdd815943dc59"
+    },
+    "tokenizer.json": {
+      "path": "tokenizer.json",
+      "sha256": "da0e79933b9ed51798a3ae27893d3c5fa4a201126cef75586296df9b4d2c62a0"
+    },
+    "model.safetensors": {
+      "path": "model.safetensors",
+      "sha256": "9a1eb90bbac323ea08aa5629b624fe6ae75db121b904799c2266a1e2c2de22d2"
+    }
+  }
+}

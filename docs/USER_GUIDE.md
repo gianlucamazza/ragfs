@@ -100,7 +100,7 @@ Index Status for "/home/user/Documents"
 |--------|-------|-------------|
 | `--config` | `-c` | Config file path (default: `~/.config/ragfs/config.toml`) |
 | `--verbose` | `-v` | Enable debug-level logging |
-| `--format` | `-f` | Output format: `text` (default), `json` |
+| `--format` | | Output format: `text` (default), `json` |
 | `--help` | `-h` | Print help information |
 | `--version` | `-V` | Print version |
 
@@ -177,7 +177,7 @@ ragfs query ./src "error handling implementation"
 ragfs query ./src "API endpoint" --limit 25
 
 # JSON output for scripting
-ragfs query ./src "configuration" -f json
+ragfs query ./src "configuration" --format json
 
 # Only search under src/auth/ (and nested dirs such as src/auth/oauth/)
 ragfs query . "login flow" --scope src/auth
@@ -331,7 +331,7 @@ ragfs status <PATH>
 ragfs status ./src
 
 # JSON output
-ragfs status ./src -f json
+ragfs status ./src --format json
 ```
 
 **JSON Output:**
@@ -471,10 +471,10 @@ Use with `jq` for processing:
 
 ```bash
 # Get just the file paths
-ragfs query ./src "auth" -f json | jq -r '.results[].file'
+ragfs query ./src "auth" --format json | jq -r '.results[].file'
 
 # Get top result score
-ragfs query ./src "auth" -f json | jq '.results[0].score'
+ragfs query ./src "auth" --format json | jq '.results[0].score'
 ```
 
 ## Storage Locations
@@ -923,10 +923,10 @@ cat /mnt/ragfs/.ragfs/.semantic/.dedupe
 
 ```bash
 # Find files matching a concept
-ragfs query ./src "error handling" -f json | jq -r '.results[].file' | xargs code
+ragfs query ./src "error handling" --format json | jq -r '.results[].file' | xargs code
 
 # Search and open in vim
-vim $(ragfs query ./src "config" -f json | jq -r '.results[0].file')
+vim $(ragfs query ./src "config" --format json | jq -r '.results[0].file')
 
 # Agent workflow: create file and verify
 echo -e "docs/api.md\n# API Reference" > /mnt/ragfs/.ragfs/.ops/.create
