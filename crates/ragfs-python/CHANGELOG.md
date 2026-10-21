@@ -10,6 +10,19 @@ This file tracks `ragfs-python` workspace versions. The crate is listed in
 on PyPI yet. Git tag `v0.2.0` is dated 2026-09-25 (the crate heading below
 keeps the earlier workspace date).
 
+## [0.3.1] - 2026-10-21
+
+
+### Added
+
+- **store**: Persist source media locations with schema v3 migration ([#216](https://github.com/gianlucamazza/ragfs/pull/216))
+
+### Fixed
+
+- Reconcile stale indexes and enable safe MCP plan execution ([#213](https://github.com/gianlucamazza/ragfs/pull/213))
+[0.3.1]: https://github.com/gianlucamazza/ragfs/compare/v0.3.0...v0.3.1
+
+
 ## [0.3.0] - 2026-10-20
 
 - Align workspace release with ADR-010 index integrity changes. See the root
