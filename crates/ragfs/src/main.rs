@@ -79,8 +79,8 @@ struct Cli {
     #[arg(short, long)]
     verbose: bool,
 
-    /// Output format (text, json)
-    #[arg(short, long, global = true, default_value = "text")]
+    /// Output format (text, json). Long-only so `-f` stays `--force` / `--foreground`.
+    #[arg(long, global = true, default_value = "text")]
     format: OutputFormat,
 
     #[command(subcommand)]
@@ -954,6 +954,29 @@ mod save_receipt_flag {
         assert!(matches!(cli.format, OutputFormat::Json));
         let cli = Cli::try_parse_from(["ragfs", "--format", "json", "status", "/tmp"]).unwrap();
         assert!(matches!(cli.format, OutputFormat::Json));
+    }
+
+    #[test]
+    fn index_and_mount_keep_short_f_and_do_not_collide_with_format() {
+        let cli = Cli::try_parse_from(["ragfs", "index", "-f", "/tmp"]).unwrap();
+        match cli.command {
+            Commands::Index { force, .. } => assert!(force),
+            _ => panic!("expected index"),
+        }
+        assert!(matches!(cli.format, OutputFormat::Text));
+
+        let cli = Cli::try_parse_from(["ragfs", "index", "/tmp", "--format", "json"]).unwrap();
+        match cli.command {
+            Commands::Index { force, .. } => assert!(!force),
+            _ => panic!("expected index"),
+        }
+        assert!(matches!(cli.format, OutputFormat::Json));
+
+        let cli = Cli::try_parse_from(["ragfs", "mount", "-f", "/tmp", "/mnt"]).unwrap();
+        match cli.command {
+            Commands::Mount { foreground, .. } => assert!(foreground),
+            _ => panic!("expected mount"),
+        }
     }
 
     #[test]

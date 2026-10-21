@@ -216,7 +216,7 @@ ragfs index ~/Documents
 ragfs query ~/Documents "how to deploy to production"
 
 # Use JSON for scripts
-ragfs query ~/Documents "config" -f json | jq '.results[].file'
+ragfs query ~/Documents "config" --format json | jq '.results[].file'
 ```
 
 ### Mode 2: FUSE Mount (Most Powerful)
@@ -269,7 +269,7 @@ Files are automatically re-indexed when they change. Press `Ctrl+C` to stop.
 | Use Case | Recommended Mode |
 |----------|-----------------|
 | Quick one-time search | CLI Query |
-| Script/automation | CLI Query with `-f json` |
+| Script/automation | CLI Query with `--format json` |
 | AI agent integration | FUSE Mount |
 | Active development | Watch Mode |
 | Long-running service | FUSE Mount (daemon) |
