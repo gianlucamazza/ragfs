@@ -1,0 +1,23 @@
+[[pins]]
+name = "facts"
+uri = "repo:benchmarks/fixtures/facts.jsonl"
+revision = "9c04d4bb0bb8a8d3f02cbda9ce1a6198f3c712a483994b949c9e85695262750c"
+path = "fixtures/facts.jsonl"
+sha256 = "9c04d4bb0bb8a8d3f02cbda9ce1a6198f3c712a483994b949c9e85695262750c"
+license = "CC-BY-4.0"
+
+[[pins]]
+name = "queries"
+uri = "repo:benchmarks/fixtures/queries.jsonl"
+revision = "9332dfb57f19779cfd6faf9923e0e9bd40d19467e4acbe3a201d289aa630eff9"
+path = "fixtures/queries.jsonl"
+sha256 = "9332dfb57f19779cfd6faf9923e0e9bd40d19467e4acbe3a201d289aa630eff9"
+license = "CC-BY-4.0"
+
+[[pins]]
+name = "scenario"
+uri = "repo:benchmarks/fixtures/scenario.json"
+revision = "15065c7438b67f1e59c1fc6174950a94a1142627bca1a8a2845ba10bf157051f"
+path = "fixtures/scenario.json"
+sha256 = "15065c7438b67f1e59c1fc6174950a94a1142627bca1a8a2845ba10bf157051f"
+license = "CC-BY-4.0"

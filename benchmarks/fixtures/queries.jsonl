@@ -1,0 +1,4 @@
+{"ability": "current", "at": "2025-01-15T00:00:00Z", "fact_id": "user.employer", "gold_ids": ["employer-r1"], "id": "initial", "phase": 1, "text": "What is the current user employer?"}
+{"ability": "knowledge-update", "at": "2025-02-15T00:00:00Z", "fact_id": "user.employer", "gold_ids": ["employer-r2"], "id": "updated", "phase": 2, "text": "What is the current user employer and what did it replace?"}
+{"ability": "temporal-reasoning", "at": "2025-01-15T00:00:00Z", "fact_id": "user.employer", "gold_ids": ["employer-r1"], "id": "historical", "phase": 2, "text": "What was the user employer in January?"}
+{"ability": "abstention", "at": "2025-02-15T00:00:00Z", "fact_id": "user.unseen", "gold_ids": [], "id": "unknown", "phase": 2, "text": "What is the user unseen value?"}

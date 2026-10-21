@@ -1,0 +1,26 @@
+schema_version = 1
+protocol_id = "ragfs-versioned-facts-v0"
+dataset = "versioned-facts-v0"
+pins = "pins.toml"
+seed = 0
+systems = ["bm25", "vector", "ragfs"]
+
+[query]
+k = 5
+hybrid = true
+
+[judge]
+enabled = false
+
+[adapters.bm25]
+implementation = "ragfs_bench.adapters.BM25"
+version = 1
+k1 = 1.5
+b = 0.75
+chunking = "exported RagFS index chunks"
+
+[adapters.vector]
+model = "thenlper/gte-small"
+dimension = 384
+metric = "cosine"
+hybrid = false

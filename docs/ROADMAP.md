@@ -625,7 +625,7 @@ multimodal work (see [Critical path](#critical-path)).
 
 | Field | Value |
 |-------|--------|
-| Status | Not started |
+| Status | Implemented — benchmark protocol/fixtures PR; merge and CI pending |
 | Issue | (#194) |
 | Size | M (~200–400 LOC of schema/docs, possibly a schema-only module) |
 | Gate | CoS merge |
@@ -654,7 +654,7 @@ multimodal work (see [Critical path](#critical-path)).
 
 | Field | Value |
 |-------|--------|
-| Status | Not started |
+| Status | Implemented — benchmark protocol/fixtures PR; merge and CI pending |
 | Issue | (#195) |
 | Size | M (~300–600 LOC including fixtures) |
 | Gate | CoS merge |
@@ -683,7 +683,7 @@ multimodal work (see [Critical path](#critical-path)).
 
 | Field | Value |
 |-------|--------|
-| Status | Not started |
+| Status | Implemented; real-model synthetic smoke passed; PR pending |
 | Issue | (#196) |
 | Size | M (~400–800 LOC) |
 | Gate | CoS merge; **Gianluca** if a new embedder pin/download is added beyond `gte-small` |
@@ -714,7 +714,7 @@ multimodal work (see [Critical path](#critical-path)).
 
 | Field | Value |
 |-------|--------|
-| Status | Not started |
+| Status | Implemented; real-model synthetic smoke passed; PR pending |
 | Issue | (#197) |
 | Size | M (~300–600 LOC) |
 | Gate | CoS merge |

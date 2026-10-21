@@ -1,0 +1,79 @@
+{
+  "validation": "passed",
+  "git_dirty": false,
+  "timestamp_utc": "2026-10-20T18:10:48.702204+00:00",
+  "protocol_sha256": "dc80129e154c97c23a55cbdd48e3b305d7f5fe8692de462907587e64c923e90a",
+  "embedding_model": "thenlper/gte-small",
+  "model_revision": "17e1f347d17fe144873b1201da91788898c639cd",
+  "write_revisions": [
+    4,
+    6
+  ],
+  "checks": [
+    {
+      "case": "initial",
+      "system": "bm25",
+      "structured_answer_correct": true
+    },
+    {
+      "case": "initial",
+      "system": "vector",
+      "structured_answer_correct": true
+    },
+    {
+      "case": "initial",
+      "system": "ragfs",
+      "structured_answer_correct": true
+    },
+    {
+      "case": "updated",
+      "system": "bm25",
+      "structured_answer_correct": true
+    },
+    {
+      "case": "updated",
+      "system": "vector",
+      "structured_answer_correct": true
+    },
+    {
+      "case": "updated",
+      "system": "ragfs",
+      "structured_answer_correct": true
+    },
+    {
+      "case": "historical",
+      "system": "bm25",
+      "structured_answer_correct": true
+    },
+    {
+      "case": "historical",
+      "system": "vector",
+      "structured_answer_correct": true
+    },
+    {
+      "case": "historical",
+      "system": "ragfs",
+      "structured_answer_correct": true
+    },
+    {
+      "case": "unknown",
+      "system": "bm25",
+      "structured_answer_correct": true
+    },
+    {
+      "case": "unknown",
+      "system": "vector",
+      "structured_answer_correct": true
+    },
+    {
+      "case": "unknown",
+      "system": "ragfs",
+      "structured_answer_correct": true
+    }
+  ],
+  "note": "Synthetic smoke validation only; no aggregate benchmark score or latency comparison.",
+  "local_git_sha": "f971fb354e50803c31f3792381051f0625144ad0",
+  "equivalent_remote_commit": "e2116f67468754742108b980990e4bb0bafc28bd",
+  "source_tree_sha": "bcd5aa818f2d80c604a5028e06c6254a20913ebc",
+  "binary_sha256": "e4a446509d5f4ba90a4915047b60a3b5cb381642998120f3884e70d44a132be2"
+}
