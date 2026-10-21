@@ -62,6 +62,7 @@ Mark these done so the plan does not re-open them.
 | ADR-011 Accepted (design only) | Done (phase 0) | `#177` / `0ef60e0b` |
 | ADR-011 phase 1 image caption indexing | Done | `#215` / `1fd6c6a` (merged 2026-10-20) |
 | ADR-011 phase 2 schema v3 | Done | `#216` / `c3eb48cf` (merged 2026-10-20); migration on open |
+| ADR-009 phases 1–4 protocol, versioned-facts, lexical adapters, ragfs adapter | Done | `#214` / `2ff7da06` (merged 2026-10-21) |
 
 The generated 0.2.3 PRs #176, #209 and #212 are closed as superseded.
 **0.3.0 shipped** in #208 at `23260656`, including #206 and #207.
@@ -625,7 +626,7 @@ multimodal work (see [Critical path](#critical-path)).
 
 | Field | Value |
 |-------|--------|
-| Status | Implemented — benchmark protocol/fixtures PR; merge and CI pending |
+| Status | Done — #214, `2ff7da06` (merged 2026-10-21); protocol/pin schemas and dry-run |
 | Issue | (#194) |
 | Size | M (~200–400 LOC of schema/docs, possibly a schema-only module) |
 | Gate | CoS merge |
@@ -654,7 +655,7 @@ multimodal work (see [Critical path](#critical-path)).
 
 | Field | Value |
 |-------|--------|
-| Status | Implemented — benchmark protocol/fixtures PR; merge and CI pending |
+| Status | Done — #214, `2ff7da06` (merged 2026-10-21); frozen CC-BY-4.0 fixtures |
 | Issue | (#195) |
 | Size | M (~300–600 LOC including fixtures) |
 | Gate | CoS merge |
@@ -683,7 +684,7 @@ multimodal work (see [Critical path](#critical-path)).
 
 | Field | Value |
 |-------|--------|
-| Status | Implemented; real-model synthetic smoke passed; PR pending |
+| Status | Done — #214, `2ff7da06` (merged 2026-10-21); bm25 and dense-only vector adapters |
 | Issue | (#196) |
 | Size | M (~400–800 LOC) |
 | Gate | CoS merge; **Gianluca** if a new embedder pin/download is added beyond `gte-small` |
@@ -714,7 +715,7 @@ multimodal work (see [Critical path](#critical-path)).
 
 | Field | Value |
 |-------|--------|
-| Status | Implemented; real-model synthetic smoke passed; PR pending |
+| Status | Done — #214, `2ff7da06` (merged 2026-10-21); ragfs adapter with receipts |
 | Issue | (#197) |
 | Size | M (~300–600 LOC) |
 | Gate | CoS merge |
