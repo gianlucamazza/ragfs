@@ -784,21 +784,59 @@ async fn process_file(
         .await
         .map_err(Error::Extraction)?;
 
-    if content.text.is_empty() {
-        debug!("Empty content for {:?}, skipping", path);
-        return Ok(0);
-    }
-
-    // Determine content type
     let content_type = determine_content_type(path, &mime_type, &content);
-
-    // Chunk content
-    let mut chunk_outputs = chunkers
-        .chunk(&content, &content_type, &config.chunk_config)
-        .await
-        .map_err(Error::Chunking)?;
-
-    chunk_outputs.retain(|chunk| chunk_has_content(&chunk.content, config.min_alnum_chars));
+    // Preserve text chunks for documents; standalone images use caption/metadata
+    // chunks only, avoiding duplicate metadata in two content types.
+    let mut chunk_outputs = Vec::new();
+    if !content.text.is_empty() && !mime_type.starts_with("image/") {
+        chunk_outputs.extend(
+            chunkers
+                .chunk(&content, &content_type, &config.chunk_config)
+                .await
+                .map_err(Error::Chunking)?
+                .into_iter()
+                .map(|chunk| (chunk, content_type.clone())),
+        );
+    }
+    for image in &content.images {
+        let text = image
+            .caption
+            .clone()
+            .filter(|text| !text.trim().is_empty())
+            .unwrap_or_else(|| {
+                if mime_type.starts_with("image/") {
+                    content.text.clone()
+                } else {
+                    format!(
+                        "Image in {} on page {} ({})",
+                        path.file_name().unwrap_or_default().to_string_lossy(),
+                        image.page.unwrap_or(0),
+                        image.mime_type
+                    )
+                }
+            });
+        let caption_content = ragfs_core::ExtractedContent {
+            text,
+            elements: vec![],
+            images: vec![],
+            metadata: Default::default(),
+        };
+        for mut chunk in chunkers
+            .chunk(
+                &caption_content,
+                &ContentType::ImageCaption,
+                &config.chunk_config,
+            )
+            .await
+            .map_err(Error::Chunking)?
+        {
+            // Caption offsets are not offsets into the image/PDF container.
+            chunk.byte_range = 0..0;
+            chunk.line_range = None;
+            chunk_outputs.push((chunk, ContentType::ImageCaption));
+        }
+    }
+    chunk_outputs.retain(|(chunk, _)| chunk_has_content(&chunk.content, config.min_alnum_chars));
     if chunk_outputs.is_empty() {
         store
             .delete_by_file_path(path)
@@ -808,7 +846,10 @@ async fn process_file(
     }
 
     // Prepare texts for embedding
-    let texts: Vec<&str> = chunk_outputs.iter().map(|c| c.content.as_str()).collect();
+    let texts: Vec<&str> = chunk_outputs
+        .iter()
+        .map(|(c, _)| c.content.as_str())
+        .collect();
 
     // Generate embeddings
     let embeddings = embedder
@@ -825,7 +866,7 @@ async fn process_file(
         .into_iter()
         .zip(embeddings)
         .enumerate()
-        .map(|(idx, (output, emb_output))| {
+        .map(|(idx, ((output, chunk_type), emb_output))| {
             build_chunk(
                 file_id,
                 path,
@@ -833,7 +874,7 @@ async fn process_file(
                 idx as u32,
                 output,
                 emb_output.embedding,
-                &content_type,
+                &chunk_type,
                 &mime_type,
                 &model_name,
                 now,
@@ -1005,6 +1046,15 @@ fn build_chunk(
         dir_depth: scope.dir_depth,
         path_components: scope.path_components,
         metadata: ChunkMetadata {
+            media: ragfs_core::MediaInfo {
+                modality: if matches!(content_type, ContentType::ImageCaption) {
+                    "image"
+                } else {
+                    "text"
+                }
+                .into(),
+                ..Default::default()
+            },
             embedding_model: Some(model_name.to_string()),
             indexed_at: Some(now),
             token_count: None,
@@ -1081,6 +1131,69 @@ mod tests {
     use tempfile::tempdir;
 
     const TEST_DIM: usize = 384;
+
+    struct CaptionFixture {
+        caption: Option<String>,
+    }
+
+    #[async_trait::async_trait]
+    impl ragfs_core::ContentExtractor for CaptionFixture {
+        fn supported_types(&self) -> &[&str] {
+            &["image/png", "application/pdf"]
+        }
+        async fn extract(
+            &self,
+            _: &Path,
+        ) -> std::result::Result<ragfs_core::ExtractedContent, ragfs_core::ExtractError> {
+            Ok(ragfs_core::ExtractedContent {
+                text: "Image: sample.png (64x64, png)".into(),
+                elements: vec![],
+                images: vec![ragfs_core::ExtractedImage {
+                    data: vec![],
+                    mime_type: "image/png".into(),
+                    caption: self.caption.clone(),
+                    page: Some(1),
+                }],
+                metadata: Default::default(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn image_caption_and_metadata_reach_typed_chunks() {
+        for caption in [Some("A vermilion lighthouse by the sea".to_string()), None] {
+            let root = tempdir().unwrap();
+            let path = root.path().join("sample.png");
+            std::fs::write(&path, "fixture").unwrap();
+            let store = Arc::new(MockStore::new());
+            let mut indexer = create_test_indexer(store.clone(), root.path());
+            let mut registry = ExtractorRegistry::new();
+            registry.register(
+                "image",
+                CaptionFixture {
+                    caption: caption.clone(),
+                },
+            );
+            indexer.extractors = Arc::new(registry);
+            assert!(indexer.process_single(&path).await.unwrap() > 0);
+            let chunks = store.get_chunks_for_file(&path).await.unwrap();
+            assert!(
+                chunks
+                    .iter()
+                    .all(|c| matches!(c.content_type, ContentType::ImageCaption))
+            );
+            assert!(
+                chunks
+                    .iter()
+                    .any(|c| c.content.contains(caption.as_deref().unwrap_or("64x64")))
+            );
+            assert!(
+                chunks
+                    .iter()
+                    .all(|c| c.byte_range == (0..0) && c.line_range.is_none())
+            );
+        }
+    }
 
     // ==================== Mock Embedder ====================
 

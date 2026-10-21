@@ -210,6 +210,7 @@ impl PyChunk {
             dir_depth: scope.dir_depth,
             path_components: scope.path_components,
             metadata: ChunkMetadata {
+                media: ragfs_core::MediaInfo::from_metadata(&self.metadata)?,
                 embedding_model: None,
                 indexed_at: Some(Utc::now()),
                 token_count: None,
@@ -328,6 +329,7 @@ impl RagfsVectorStore {
                 .into_iter()
                 .map(|r| {
                     let mut metadata = r.metadata;
+                    r.media.write_metadata(&mut metadata);
                     metadata.insert(
                         "file_path".to_string(),
                         r.file_path.to_string_lossy().to_string(),
@@ -394,6 +396,7 @@ impl RagfsVectorStore {
                 .into_iter()
                 .map(|r| {
                     let mut metadata = r.metadata;
+                    r.media.write_metadata(&mut metadata);
                     metadata.insert(
                         "file_path".to_string(),
                         r.file_path.to_string_lossy().to_string(),

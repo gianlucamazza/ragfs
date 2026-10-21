@@ -356,7 +356,7 @@ Captions into the existing text table (ADR-011 phase 1).
 
 | Field | Value |
 |-------|--------|
-| Status | Not started |
+| Status | Implemented — image caption indexing PR; merge and CI pending |
 | Issue | (#187) |
 | Size | M (~300–600 LOC) |
 | Gate | CoS merge; **Gianluca** if this PR grows `full` or adds a new model download beyond the existing BLIP pin |
@@ -396,7 +396,7 @@ summary skipped this phase; the ADR includes it, so it is in the plan.
 
 | Field | Value |
 |-------|--------|
-| Status | Not started |
+| Status | Implemented; migration and full CI validation pending |
 | Issue | (#188) |
 | Size | M (~250–500 LOC) |
 | Gate | CoS merge |

@@ -295,6 +295,9 @@ impl RagFs {
                         .iter()
                         .map(|r| {
                             serde_json::json!({
+                                "modality": r.media.modality,
+                                "start_ms": r.media.start_ms,
+                                "end_ms": r.media.end_ms,
                                 "file": r.file_path.to_string_lossy(),
                                 "score": r.score,
                                 "content": truncate(&r.content, 500),
