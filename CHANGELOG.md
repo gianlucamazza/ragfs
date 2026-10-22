@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-21
+
+Image caption indexing, additive schema v3 media columns, a reproducible
+benchmark protocol, stale-index reconciliation, and roadmap status updates.
+
+### Upgrade notes
+
+Existing indexes migrate automatically on open (`index`, `query`, `status`,
+or `mount`) to schema v3. Missing `modality`, `start_ms`, and `end_ms`
+columns are added in place; rows with null `modality` are set to `text`
+with no time interval. A reindex is not required to keep using the index.
+A v0.3.0 binary still opens a migrated v3 index (`chunks_schema_version >= 2`
+is treated as current; extra columns are ignored on read). Run
+`ragfs index <path> --force` only if you want existing image-caption rows
+classified as `image` instead of `text`.
+
+### Added
+
+- Persist source media locations with schema v3 migration. Existing v1/v2
+  indexes migrate additively on open; legacy rows default to text with no
+  time interval (#216).
+- Index image captions with bounded image decoding (#215).
+- Add a reproducible benchmark protocol and validated retrieval adapters
+  (#214). The same merge also bumps `rustls-webpki` 0.103.15 → 0.103.16
+  and `webpki-roots` / `webpki-root-certs` in `Cargo.lock`.
+
+### Fixed
+
+- Reconcile stale indexes and enable safe MCP plan execution (#213).
+
+### Documentation
+
+- Mark ADR-011 phases 1–2 done in ROADMAP (#218).
+- Mark ADR-009 phases shipped via #214 in ROADMAP (#222).
+
 ## [0.3.0] - 2026-10-20
 
 ### Security and index integrity
@@ -257,7 +292,9 @@ Related (pre-existing, still documented): `RAGFS_DATA_DIR`, `RAGFS_DB_PATH`, `RA
 - Content-addressed storage with blake3 hashing
 - Registry pattern for extensible extractors and chunkers
 
-[Unreleased]: https://github.com/gianlucamazza/ragfs/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/gianlucamazza/ragfs/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/gianlucamazza/ragfs/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/gianlucamazza/ragfs/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/gianlucamazza/ragfs/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/gianlucamazza/ragfs/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/gianlucamazza/ragfs/compare/v0.1.0...v0.2.0

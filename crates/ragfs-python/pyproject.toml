@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "ragfs"
-version = "0.3.0"
+version = "0.3.1"
 description = "Python bindings for RAGFS semantic filesystem and RAG pipeline"
 readme = "README.md"
 license = { text = "MIT OR Apache-2.0" }
