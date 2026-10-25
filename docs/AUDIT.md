@@ -5,7 +5,7 @@ inside pull-request descriptions. **Update it in the same PR that changes the
 underlying fact.** If a row here disagrees with the code, the code wins and the
 row is a bug.
 
-Last updated: 2026-10-19.
+Last updated: 2026-10-25.
 
 ---
 
@@ -53,6 +53,7 @@ actionable report at all. See §4.
 | RUSTSEC-2026-0258 | h2 (0.4 line) | 0.4.13 → 0.4.19 | lock |
 | RUSTSEC-2026-0285 | rustls (0.23 line) | 0.23.36 → 0.23.45 | lock |
 | RUSTSEC-2026-0346, -0347, -0348, -0349 | rustls (0.23 line) | 0.23.45 → 0.23.46 | lock |
+| RUSTSEC-2026-0385 | ctutils | 0.4.2 → 0.4.5 | lock (transitive via digest 0.11 → hmac → pbkdf2 → zip) |
 | RUSTSEC-2026-0367, -0368, -0369 | zip | 8.6.0 → 9.0.1 | lock + manifest; `candle-core` 0.11.0 patched locally (`vendor/candle-core`) because it still requires `zip ^8.6`. Drop the vendor when huggingface/candle#4041 is on crates.io. |
 | RUSTSEC-2026-0187 | lopdf | 0.38.0 → 0.42.0 | code + manifest |
 | RUSTSEC-2026-0176, -0177 | pyo3 | 0.27.2 → 0.29.2 | code + manifest |
