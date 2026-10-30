@@ -25,7 +25,7 @@ All processing stays on the machine. The first run downloads [`thenlper/gte-smal
 
 ## Quick start
 
-GitHub Release `v0.3.0` ships the Linux CLI only (crates.io and PyPI are not used).
+The latest GitHub Release ships the Linux CLI only (x86_64 and aarch64 tarballs; crates.io and PyPI are not used).
 
 ```bash
 tar -xzf ragfs-linux-x86_64.tar.gz
