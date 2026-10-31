@@ -217,3 +217,7 @@ double_must_use = "allow"
 # huggingface/candle#4041 is published.
 [patch.crates-io]
 candle-core = { path = "vendor/candle-core" }
+# arrow-ipc 58.4.x and lance-encoding 10.0.0 pin zstd ^0.13 (RUSTSEC-2026-0391
+# / 0398 / 0403). No 0.13.x patch exists; see vendor/*/PATCHES.md.
+arrow-ipc = { path = "vendor/arrow-ipc" }
+lance-encoding = { path = "vendor/lance-encoding" }
