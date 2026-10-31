@@ -5,7 +5,7 @@ inside pull-request descriptions. **Update it in the same PR that changes the
 underlying fact.** If a row here disagrees with the code, the code wins and the
 row is a bug.
 
-Last updated: 2026-10-25.
+Last updated: 2026-10-30.
 
 ---
 
@@ -54,6 +54,8 @@ actionable report at all. See §4.
 | RUSTSEC-2026-0285 | rustls (0.23 line) | 0.23.36 → 0.23.45 | lock |
 | RUSTSEC-2026-0346, -0347, -0348, -0349 | rustls (0.23 line) | 0.23.45 → 0.23.46 | lock |
 | RUSTSEC-2026-0385 | ctutils | 0.4.2 → 0.4.5 | lock (transitive via digest 0.11 → hmac → pbkdf2 → zip) |
+| RUSTSEC-2026-0391 | zstd | 0.13.3 → 0.14.3 | lock + path patch of `arrow-ipc` 58.4.0 and `lance-encoding` 10.0.0 (`vendor/arrow-ipc`, `vendor/lance-encoding`). Those crates pin `zstd ^0.13`; there is no 0.13.x patched release. `zip` already used 0.14.3. |
+| RUSTSEC-2026-0398, -0403 | zstd-safe | 7.2.4 → 8.2.0 | same path patches; zstd 0.14.3 depends on zstd-safe 8.2.0 |
 | RUSTSEC-2026-0367, -0368, -0369 | zip | 8.6.0 → 9.0.1 | lock + manifest; `candle-core` 0.11.0 patched locally (`vendor/candle-core`) because it still requires `zip ^8.6`. Drop the vendor when huggingface/candle#4041 is on crates.io. |
 | RUSTSEC-2026-0187 | lopdf | 0.38.0 → 0.42.0 | code + manifest |
 | RUSTSEC-2026-0176, -0177 | pyo3 | 0.27.2 → 0.29.2 | code + manifest |
