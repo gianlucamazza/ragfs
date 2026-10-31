@@ -16,6 +16,8 @@ build.rs; benches omitted) plus:
 
 - `Cargo.toml`: `zstd` 0.13 → 0.14.3; rust/clippy lints allowed so CI
   `RUSTFLAGS=-Dwarnings` does not fail on unmodified upstream 10.0.0
+- `LICENSE`: Apache-2.0 text from lance-format/lance tag `v10.0.0` (the
+  published crate tarball does not ship it). That tag has no NOTICE file.
 
 Remove the `[patch.crates-io]` entry in the workspace `Cargo.toml` and
 this directory when the workspace `lancedb` pin moves to a generation
