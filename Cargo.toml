@@ -130,7 +130,7 @@ anyhow = "1.0"
 # Replaces unmaintained `daemonize` (RUSTSEC-2025-0069 / RUSTSEC-2026-0104).
 # rustix 1.x exposes setsid/chdir/umask but not fork (that lives behind the
 # unstable `runtime` feature), so nix is the maintained alternative.
-nix = { version = "0.31", features = ["process", "fs", "user"] }
+nix = { version = "0.32", features = ["process", "fs", "user"] }
 
 # Utilities
 uuid = { version = "1.19", features = ["v4", "serde"] }
